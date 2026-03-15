@@ -13,6 +13,4 @@ def main():
     app.mainloop()
 
 if __name__ == "__main__":
-    # Garante que as configurações sejam carregadas antes de qualquer coisa
-    import config
     main()

@@ -1,27 +1,37 @@
 import threading
-from api import zabbix_api, gemini_api
+from api import zabbix_api, ai_api
 
 class Controller:
     def __init__(self, view):
         self.view = view
-        self.auth_token = None
         self.load_models_async()
 
     def load_models_async(self):
-        """Inicia a busca pelos modelos do Gemini em uma thread separada."""
+        """Inicia a busca pelos modelos na IA escolhida."""
+        provider = self.view.ai_provider_var.get()
+        api_key = self.view.ai_key_var.get().strip()
+        
+        if not api_key:
+            self.view.update_model_list(["Insira a API Key primeiro..."], None)
+            return
+            
+        self.view.model_combo.set(f"Conectando à {provider}...")
         thread = threading.Thread(target=self._fetch_and_update_models)
         thread.daemon = True
         thread.start()
 
     def _fetch_and_update_models(self):
         try:
-            gemini_api.setup_gemini()
-            models = gemini_api.get_available_models()
-            default = "models/gemini-1.5-pro-latest" if "models/gemini-1.5-pro-latest" in models else None
-            self.view.update_model_list(models, default)
+            provider = self.view.ai_provider_var.get()
+            api_key = self.view.ai_key_var.get().strip()
+            client = ai_api.AIClient(provider, api_key)
+            models = client.get_available_models()
+            
+            default = next((m for m in models if "pro" in m.lower() or "gpt-4" in m.lower() or "o1" in m.lower()), models[0] if models else None)
+            self.view.update_model_list(models if models else ["Nenhum modelo compatível"], default)
         except Exception as e:
             self.view.log(f"Aviso: Não foi possível carregar modelos online: {e}")
-            self.view.update_model_list(["gemini-1.5-pro-latest", "gemini-1.5-flash-latest"], "gemini-1.5-pro-latest")
+            self.view.update_model_list(["Falha na conexão"], None)
 
     def start_audit(self):
         """Inicia o processo de auditoria em uma nova thread para não travar a GUI."""
@@ -37,25 +47,32 @@ class Controller:
         """
         Executa o fluxo completo da auditoria: autentica, coleta, gera relatório e desloga.
         """
+        z_url = self.view.zabbix_url_var.get().strip()
+        z_user = self.view.zabbix_user_var.get().strip()
+        z_pass = self.view.zabbix_pass_var.get().strip()
+        ai_prov = self.view.ai_provider_var.get()
+        ai_key = self.view.ai_key_var.get().strip()
+        ai_mod = self.view.get_selected_model()
+        
+        if not all([z_url, z_user, z_pass, ai_key, ai_mod]):
+            self.view.log("ERRO: Preencha todas as configurações na aba 'Configurações' antes de iniciar.", "danger")
+            self.view.set_ui_state('normal')
+            return
+            
         try:
-            # 0. Configura APIs
-            self.view.log("Configurando APIs...")
-            gemini_api.setup_gemini()
-
-            # 1. Descobre a versão e autentica no Zabbix
-            self.view.log("Detectando versão do Zabbix...")
-            version, use_header = zabbix_api.discover_zabbix_version()
+            zabbix = zabbix_api.ZabbixClient(z_url, z_user, z_pass)
+            self.view.log(f"Conectando ao Zabbix em {z_url}...")
+            version = zabbix.discover_version()
             if version:
-                auth_method = 'Header Bearer' if use_header else 'Payload'
-                self.view.log(f"Versão do Zabbix detectada: {version} (Autenticação via {auth_method})")
+                self.view.log(f"Versão do Zabbix detectada: {version}")
 
             self.view.log("Autenticando no Zabbix...")
-            self.auth_token = zabbix_api.authenticate_zabbix()
+            zabbix.authenticate()
             self.view.log("Autenticação realizada com sucesso.")
 
             # 2. Coleta os dados
-            self.view.log("Iniciando coleta de dados do ambiente Zabbix...")
-            zabbix_data = zabbix_api.collect_zabbix_data(self.auth_token)
+            self.view.log("Iniciando varredura e extração via API...")
+            zabbix_data = zabbix.collect_data()
             self.view.log("Coleta de dados concluída.")
 
             # 3. Gera o relatório com a IA
@@ -71,9 +88,9 @@ class Controller:
                     except Exception as e:
                         self.view.log(f"Aviso: Não foi possível ler o arquivo {filepath}: {e}")
 
-            selected_model = self.view.get_selected_model()
-            self.view.log(f"Enviando dados para análise da IA (Modelo: {selected_model}). Isso pode levar um momento...")
-            report = gemini_api.generate_audit_report(zabbix_data, selected_model, os_evidence_text)
+            self.view.log(f"Enviando dados para {ai_prov} (Modelo: {ai_mod}). Aguarde...")
+            ai_client = ai_api.AIClient(ai_prov, ai_key)
+            report = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text)
             self.view.log("Relatório gerado com sucesso!")
 
             # 4. Salva e exibe o relatório
@@ -86,8 +103,6 @@ class Controller:
         except Exception as e:
             self.view.log(f"ERRO: {e}", "danger")
         finally:
-            # 5. Desloga do Zabbix por segurança
-            if self.auth_token:
-                self.view.log("Encerrando sessão do Zabbix...")
-                zabbix_api.logout_zabbix(self.auth_token)
+            if 'zabbix' in locals() and getattr(zabbix, 'auth_token', None):
+                zabbix.logout()
             self.view.set_ui_state('normal')
