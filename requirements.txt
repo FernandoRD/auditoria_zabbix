@@ -1,5 +1,9 @@
 requests
 google-generativeai
 openai
+anthropic
 ttkbootstrap
 python-dotenv
+pypandoc
+markdown
+xhtml2pdf
