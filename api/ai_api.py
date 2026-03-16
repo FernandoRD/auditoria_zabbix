@@ -72,6 +72,8 @@ REGRA DE OURO: Os clientes precisam de evidências. SEMPRE que mencionar um prob
 
 REGRA DE OURO 2: O relatório deve ser visualmente rico no terminal/texto. No item 3, o uso de gráficos baseados em caracteres (ASCII Art) para ilustrar a flutuação dos valores de processos/filas é mandatório.
 
+REGRA DE OURO 3: O relatório deverá possuir um sumário.
+
 Utilize formatação em Markdown para salvamento, este relatório será compartilhado com várias pessoas então dê uma atenção especial a aparência e estilo mais elegante.
 """
         if self.provider == "Google Gemini":

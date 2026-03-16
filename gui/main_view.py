@@ -1,6 +1,6 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.scrolled import ScrolledText
-from ttkbootstrap.constants import BOTH, X, LEFT, WORD, END
+from ttkbootstrap.constants import BOTH, X, LEFT, RIGHT, WORD, END
 from tkinter import filedialog
 import os
 import json
@@ -16,20 +16,24 @@ class MainView(ttk.Window):
         # Carrega defaults do .env (se existir)
         load_dotenv()
         self.settings_file = "settings.json"
-        self.api_keys = {
-            "Google Gemini": os.getenv("GEMINI_API_KEY", ""),
-            "OpenAI": os.getenv("OPENAI_API_KEY", ""),
-            "Anthropic": os.getenv("ANTHROPIC_API_KEY", ""),
-            "Ollama": os.getenv("OLLAMA_URL", "http://localhost:11434")
+        self.ai_accounts = {
+            "Google Gemini": {"provider": "Google Gemini", "api_key": os.getenv("GEMINI_API_KEY", "")},
+            "OpenAI": {"provider": "OpenAI", "api_key": os.getenv("OPENAI_API_KEY", "")},
+            "Anthropic": {"provider": "Anthropic", "api_key": os.getenv("ANTHROPIC_API_KEY", "")},
+            "Ollama": {"provider": "Ollama", "api_key": os.getenv("OLLAMA_URL", "http://localhost:11434")}
         }
         self.settings = {}
         self.load_settings()
 
+        default_account = self.settings.get("ai_account", "Google Gemini")
+        if default_account not in self.ai_accounts:
+            default_account = list(self.ai_accounts.keys())[0] if self.ai_accounts else ""
+
         self.zabbix_url_var = ttk.StringVar(value=self.settings.get("zabbix_url", os.getenv("ZABBIX_URL", "")))
         self.zabbix_user_var = ttk.StringVar(value=self.settings.get("zabbix_user", os.getenv("ZABBIX_USER", "")))
         self.zabbix_pass_var = ttk.StringVar(value=self.settings.get("zabbix_pass", os.getenv("ZABBIX_PASS", "")))
-        self.ai_provider_var = ttk.StringVar(value=self.settings.get("ai_provider", "Google Gemini"))
-        self.ai_key_var = ttk.StringVar(value=self.api_keys.get(self.ai_provider_var.get(), ""))
+        self.ai_provider_var = ttk.StringVar(value=default_account)
+        self.ai_key_var = ttk.StringVar(value=self.ai_accounts.get(default_account, {}).get("api_key", ""))
 
         # Rastreadores (Traces) para detectar alterações na interface e mudar a chave correta
         self.ai_key_var.trace_add("write", self.update_key_dict)
@@ -46,8 +50,12 @@ class MainView(ttk.Window):
             try:
                 with open(self.settings_file, "r", encoding="utf-8") as f:
                     self.settings = json.load(f)
-                    if "api_keys" in self.settings:
-                        self.api_keys.update(self.settings["api_keys"])
+                    if "ai_accounts" in self.settings:
+                        self.ai_accounts = self.settings["ai_accounts"]
+                    elif "api_keys" in self.settings:
+                        for k, v in self.settings["api_keys"].items():
+                            if k in self.ai_accounts:
+                                self.ai_accounts[k]["api_key"] = v
             except Exception:
                 pass
 
@@ -55,8 +63,10 @@ class MainView(ttk.Window):
         self.settings["zabbix_url"] = self.zabbix_url_var.get()
         self.settings["zabbix_user"] = self.zabbix_user_var.get()
         self.settings["zabbix_pass"] = self.zabbix_pass_var.get()
-        self.settings["ai_provider"] = self.ai_provider_var.get()
-        self.settings["api_keys"] = self.api_keys
+        self.settings["ai_account"] = self.ai_provider_var.get()
+        self.settings["ai_accounts"] = self.ai_accounts
+        if "api_keys" in self.settings:
+            del self.settings["api_keys"]
         try:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, indent=4, ensure_ascii=False)
@@ -64,17 +74,38 @@ class MainView(ttk.Window):
             pass
 
     def update_key_dict(self, *args):
-        provider = self.ai_provider_var.get()
-        self.api_keys[provider] = self.ai_key_var.get()
+        account = self.ai_provider_var.get()
+        if account in self.ai_accounts:
+            self.ai_accounts[account]["api_key"] = self.ai_key_var.get()
 
     def on_provider_change(self, *args):
-        provider = self.ai_provider_var.get()
-        self.ai_key_var.set(self.api_keys.get(provider, ""))
+        account = self.ai_provider_var.get()
+        account_info = self.ai_accounts.get(account, {})
+        self.ai_key_var.set(account_info.get("api_key", ""))
+        
+        base_provider = account_info.get("provider", "")
         if hasattr(self, 'ai_key_entry'):
-            if provider == "Ollama":
+            if base_provider == "Ollama":
                 self.ai_key_entry.configure(show="")
             else:
                 self.ai_key_entry.configure(show="*")
+
+    def get_selected_base_provider(self):
+        account = self.ai_provider_var.get()
+        return self.ai_accounts.get(account, {}).get("provider", "Google Gemini")
+
+    def open_manage_accounts_window(self):
+        ManageAccountsWindow(self)
+        
+    def refresh_accounts(self, select_account=""):
+        account_names = list(self.ai_accounts.keys())
+        self.provider_combo['values'] = account_names
+        if select_account and select_account in account_names:
+            self.ai_provider_var.set(select_account)
+        elif account_names:
+            self.ai_provider_var.set(account_names[0])
+        else:
+            self.ai_provider_var.set("")
 
     def create_widgets(self):
         main_frame = ttk.Frame(self, padding=10)
@@ -136,9 +167,11 @@ class MainView(ttk.Window):
         
         ai_frame = ttk.LabelFrame(config_frame, text="Inteligência Artificial")
         ai_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
-        ttk.Label(ai_frame, text="Provedor:").grid(row=0, column=0, sticky="w", pady=5)
-        provider_combo = ttk.Combobox(ai_frame, textvariable=self.ai_provider_var, values=["Google Gemini", "OpenAI", "Anthropic", "Ollama"], state="readonly", width=25)
-        provider_combo.grid(row=0, column=1, sticky="w", pady=5, padx=5)
+        ttk.Label(ai_frame, text="Conta/Provedor:").grid(row=0, column=0, sticky="w", pady=5)
+        self.provider_combo = ttk.Combobox(ai_frame, textvariable=self.ai_provider_var, values=list(self.ai_accounts.keys()), state="readonly", width=25)
+        self.provider_combo.grid(row=0, column=1, sticky="w", pady=5, padx=5)
+        
+        ttk.Button(ai_frame, text="⚙️ Gerenciar Contas", command=self.open_manage_accounts_window, bootstyle="secondary-outline").grid(row=0, column=2, padx=5)
         
         ttk.Label(ai_frame, text="Key / URL:").grid(row=1, column=0, sticky="w", pady=5)
         self.ai_key_entry = ttk.Entry(ai_frame, textvariable=self.ai_key_var, width=55, show="*")
@@ -330,3 +363,96 @@ class MainView(ttk.Window):
 
     def set_ui_state(self, state):
         self.start_button.configure(state=state)
+
+class ManageAccountsWindow(ttk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Gerenciar Contas de IA")
+        self.geometry("500x320")
+        self.grab_set()
+
+        self.account_list = list(self.parent.ai_accounts.keys())
+        self.selected_account = ttk.StringVar(value="<Nova Conta>")
+        
+        self.account_name_var = ttk.StringVar()
+        self.base_provider_var = ttk.StringVar(value="Google Gemini")
+        self.token_var = ttk.StringVar()
+
+        self.create_widgets()
+        self.on_account_select()
+
+    def create_widgets(self):
+        main_frame = ttk.Frame(self, padding=15)
+        main_frame.pack(fill=BOTH, expand=True)
+
+        row0 = ttk.Frame(main_frame)
+        row0.pack(fill=X, pady=5)
+        ttk.Label(row0, text="Selecionar Conta:", width=18).pack(side=LEFT)
+        self.combo_accounts = ttk.Combobox(row0, textvariable=self.selected_account, values=["<Nova Conta>"] + self.account_list, state="readonly")
+        self.combo_accounts.pack(side=LEFT, fill=X, expand=True)
+        self.selected_account.trace_add("write", self.on_account_select)
+
+        row1 = ttk.Frame(main_frame)
+        row1.pack(fill=X, pady=5)
+        ttk.Label(row1, text="Nome da Conta:", width=18).pack(side=LEFT)
+        ttk.Entry(row1, textvariable=self.account_name_var).pack(side=LEFT, fill=X, expand=True)
+
+        row2 = ttk.Frame(main_frame)
+        row2.pack(fill=X, pady=5)
+        ttk.Label(row2, text="Provedor Base:", width=18).pack(side=LEFT)
+        ttk.Combobox(row2, textvariable=self.base_provider_var, values=["Google Gemini", "OpenAI", "Anthropic", "Ollama"], state="readonly").pack(side=LEFT, fill=X, expand=True)
+
+        row3 = ttk.Frame(main_frame)
+        row3.pack(fill=X, pady=5)
+        ttk.Label(row3, text="Token/URL:", width=18).pack(side=LEFT)
+        ttk.Entry(row3, textvariable=self.token_var, show="*").pack(side=LEFT, fill=X, expand=True)
+
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=X, pady=20)
+        ttk.Button(btn_frame, text="Salvar", bootstyle="success", command=self.save_account).pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame, text="Remover", bootstyle="danger", command=self.remove_account).pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancelar", bootstyle="secondary", command=self.destroy).pack(side=RIGHT, padx=5)
+
+    def on_account_select(self, *args):
+        selected = self.selected_account.get()
+        if selected == "<Nova Conta>":
+            self.account_name_var.set("")
+            self.base_provider_var.set("Google Gemini")
+            self.token_var.set("")
+        elif selected in self.parent.ai_accounts:
+            self.account_name_var.set(selected)
+            self.base_provider_var.set(self.parent.ai_accounts[selected]["provider"])
+            self.token_var.set(self.parent.ai_accounts[selected]["api_key"])
+
+    def save_account(self):
+        old_name = self.selected_account.get()
+        new_name = self.account_name_var.get().strip()
+        base_prov = self.base_provider_var.get()
+        token = self.token_var.get().strip()
+
+        if not new_name:
+            return
+
+        if old_name != "<Nova Conta>" and old_name != new_name:
+            if old_name in self.parent.ai_accounts:
+                del self.parent.ai_accounts[old_name]
+
+        self.parent.ai_accounts[new_name] = {
+            "provider": base_prov,
+            "api_key": token
+        }
+
+        self.parent.save_settings()
+        self.parent.refresh_accounts(new_name)
+        self.destroy()
+
+    def remove_account(self):
+        selected = self.selected_account.get()
+        if selected != "<Nova Conta>" and selected in self.parent.ai_accounts:
+            del self.parent.ai_accounts[selected]
+            self.parent.save_settings()
+            
+            next_acc = list(self.parent.ai_accounts.keys())[0] if self.parent.ai_accounts else ""
+            self.parent.refresh_accounts(next_acc)
+            self.destroy()

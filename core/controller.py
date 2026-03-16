@@ -8,7 +8,7 @@ class Controller:
 
     def load_models_async(self):
         """Inicia a busca pelos modelos na IA escolhida."""
-        provider = self.view.ai_provider_var.get()
+        provider = self.view.get_selected_base_provider()
         api_key = self.view.ai_key_var.get().strip()
         
         if not api_key:
@@ -22,7 +22,7 @@ class Controller:
 
     def _fetch_and_update_models(self):
         try:
-            provider = self.view.ai_provider_var.get()
+            provider = self.view.get_selected_base_provider()
             api_key = self.view.ai_key_var.get().strip()
             client = ai_api.AIClient(provider, api_key)
             models = client.get_available_models()
@@ -50,7 +50,7 @@ class Controller:
         z_url = self.view.zabbix_url_var.get().strip()
         z_user = self.view.zabbix_user_var.get().strip()
         z_pass = self.view.zabbix_pass_var.get().strip()
-        ai_prov = self.view.ai_provider_var.get()
+        ai_prov = self.view.get_selected_base_provider()
         ai_key = self.view.ai_key_var.get().strip()
         ai_mod = self.view.get_selected_model()
         
