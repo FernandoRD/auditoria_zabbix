@@ -1,6 +1,8 @@
 import json
 import google.generativeai as genai
 import openai
+import anthropic
+import requests
 
 class AIClient:
     def __init__(self, provider, api_key):
@@ -21,6 +23,18 @@ class AIClient:
                 client = openai.OpenAI(api_key=self.api_key)
                 models = client.models.list()
                 return sorted([m.id for m in models.data if "gpt" in m.id or "o1" in m.id or "o3" in m.id])
+                
+            elif self.provider == "Anthropic":
+                # A API da Anthropic não possui listagem dinâmica, então retornamos os principais hardcoded
+                return ["claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-20240307"]
+                
+            elif self.provider == "Ollama":
+                # Para Ollama, api_key será tratada como a URL do servidor local
+                base_url = self.api_key.rstrip('/')
+                if not base_url: base_url = "http://localhost:11434"
+                resp = requests.get(f"{base_url}/api/tags", timeout=5)
+                resp.raise_for_status()
+                return [m["name"] for m in resp.json().get("models", [])]
                 
         except Exception as e:
             raise ConnectionError(f"Falha ao comunicar com a API ({self.provider}): {e}")
@@ -58,7 +72,7 @@ REGRA DE OURO: Os clientes precisam de evidências. SEMPRE que mencionar um prob
 
 REGRA DE OURO 2: O relatório deve ser visualmente rico no terminal/texto. No item 3, o uso de gráficos baseados em caracteres (ASCII Art) para ilustrar a flutuação dos valores de processos/filas é mandatório.
 
-Utilize formatação em Markdown para facilitar a leitura, com títulos, listas e negrito onde necessário.
+Utilize formatação em Markdown para salvamento, este relatório será compartilhado com várias pessoas então dê uma atenção especial a aparência e estilo mais elegante.
 """
         if self.provider == "Google Gemini":
             genai.configure(api_key=self.api_key)
@@ -69,3 +83,26 @@ Utilize formatação em Markdown para facilitar a leitura, com títulos, listas 
             client = openai.OpenAI(api_key=self.api_key)
             response = client.chat.completions.create(model=model_name, messages=[{"role": "system", "content": "Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown com gráficos ASCII onde solicitado e cite dados exatos."}, {"role": "user", "content": prompt}])
             return response.choices[0].message.content
+            
+        elif self.provider == "Anthropic":
+            client = anthropic.Anthropic(api_key=self.api_key)
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=4096,
+                system="Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown com gráficos ASCII onde solicitado e cite dados exatos.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.content[0].text
+            
+        elif self.provider == "Ollama":
+            base_url = self.api_key.rstrip('/')
+            if not base_url: base_url = "http://localhost:11434"
+            payload = {
+                "model": model_name,
+                "system": "Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown com gráficos ASCII onde solicitado e cite dados exatos.",
+                "prompt": prompt,
+                "stream": False
+            }
+            resp = requests.post(f"{base_url}/api/generate", json=payload, timeout=300) # Timeout alto pois IA local pode demorar
+            resp.raise_for_status()
+            return resp.json().get("response", "")

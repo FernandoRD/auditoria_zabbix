@@ -1,6 +1,6 @@
 # Arquivos de ambiente
 .env
-
+settings.json
 # Cache do Python
 __pycache__/
 

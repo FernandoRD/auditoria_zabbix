@@ -93,11 +93,7 @@ class Controller:
             report = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text)
             self.view.log("Relatório gerado com sucesso!")
 
-            # 4. Salva e exibe o relatório
-            report_filename = "relatorio_auditoria_zabbix.md"
-            with open(report_filename, "w", encoding="utf-8") as f:
-                f.write(report)
-            self.view.log(f"Relatório salvo como: {report_filename}")
+            # 4. Exibe o relatório na tela
             self.view.show_report(report)
 
         except Exception as e:
