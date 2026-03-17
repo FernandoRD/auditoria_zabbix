@@ -131,7 +131,7 @@ class ZabbixClient:
 
         # 3. Análise de Itens
         items = self.api_call("item.get", {
-            "output": ["itemid", "name", "type", "delay", "key_"],
+            "output": ["itemid", "name", "type", "delay", "key_", "state"],
             "filter": {"status": "0"}
         })
         if items:
@@ -148,6 +148,10 @@ class ZabbixClient:
             
             audit_data["aggressive_polling_count"] = len(aggressive_items)
             audit_data["aggressive_polling_samples"] = aggressive_items[:10]
+            
+            unsupported_items = [i for i in items if i.get("state") == "1"]
+            audit_data["unsupported_items_count"] = len(unsupported_items)
+            audit_data["unsupported_items_samples"] = [i["key_"] for i in unsupported_items[:10]]
 
         # 4. Templates Utilizados
         templates = self.api_call("template.get", {"output": ["host"]})
@@ -196,6 +200,65 @@ class ZabbixClient:
                         "recent_trend_values": trend_values
                     })
             audit_data["zabbix_server_health_metrics"] = server_health
+
+        # 6. Coletas Extras de Higiene e Risco
+        # NVPS (New Values Per Second)
+        try:
+            nvps_item = self.api_call("item.get", {"output": ["lastvalue"], "search": {"key_": "zabbix[wcache,values"}, "hostids": active_hostid})
+            audit_data["nvps"] = nvps_item[0].get("lastvalue", "0") if nvps_item else "Desconhecido"
+        except Exception: pass
+
+        # Triggers Órfãs ou Quebradas
+        try:
+            triggers = self.api_call("trigger.get", {"output": ["state"], "filter": {"status": "0"}})
+            if triggers:
+                audit_data["total_active_triggers"] = len(triggers)
+                audit_data["unsupported_triggers_count"] = len([t for t in triggers if t.get("state") == "1"])
+        except Exception: pass
+
+        # Discovery Rules (Regras de Descoberta Ativas)
+        try:
+            drules = self.api_call("drule.get", {"output": ["name", "delay", "iprange"], "filter": {"status": "0"}})
+            audit_data["active_discovery_rules_count"] = len(drules) if drules else 0
+            audit_data["active_discovery_rules_samples"] = drules[:5] if drules else []
+        except Exception: pass
+
+        # Alertas Falhos (Emails que não estão saindo)
+        try:
+            failed_alerts = self.api_call("alert.get", {"output": ["error"], "filter": {"status": "2"}, "limit": 100})
+            audit_data["recent_failed_alerts_count"] = len(failed_alerts) if failed_alerts else 0
+            if failed_alerts:
+                audit_data["failed_alerts_errors_samples"] = list(set([a.get("error", "") for a in failed_alerts if a.get("error")]))[:5]
+        except Exception: pass
+
+        # Problemas Críticos Não Reconhecidos
+        try:
+            problems = self.api_call("problem.get", {"output": ["name", "severity"], "filter": {"acknowledged": "0"}, "severities": [4, 5], "source": 0, "object": 0, "limit": 20})
+            audit_data["unacknowledged_critical_problems_count"] = len(problems) if problems else 0
+            audit_data["unacknowledged_critical_problems_samples"] = [p.get("name") for p in problems[:5]] if problems else []
+        except Exception: pass
+
+        # Configurações de Banco de Dados (Housekeeping)
+        try:
+            housekeeping = self.api_call("housekeeping.get", {"output": "extend"})
+            if isinstance(housekeeping, list) and len(housekeeping) > 0:
+                audit_data["housekeeping_config"] = housekeeping[0]
+            else:
+                audit_data["housekeeping_config"] = housekeeping
+        except Exception: pass
+
+        # Governança e Segurança: Usuários Super Admin
+        try:
+            users = self.api_call("user.get", {"output": ["username", "type", "roleid"]})
+            super_admins = []
+            if users:
+                for u in users:
+                    # Suporte a versões <= 5.0 (type 3) e >= 5.2 (roleid 3 para SA default)
+                    if str(u.get("type")) == "3" or str(u.get("roleid")) == "3":
+                        super_admins.append(u.get("username", u.get("alias", "Desconhecido")))
+            audit_data["super_admin_users_count"] = len(super_admins)
+            audit_data["super_admin_users_samples"] = super_admins[:10]
+        except Exception: pass
 
         # 6. Proxies
         proxies = self.api_call("proxy.get", {"output": "extend"})
