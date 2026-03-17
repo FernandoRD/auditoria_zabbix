@@ -1,9 +1,12 @@
 import threading
 from api import zabbix_api, ai_api
+import json
+import os
 
 class Controller:
     def __init__(self, view):
         self.view = view
+        self.cancel_event = threading.Event()
         self.load_models_async()
 
     def load_models_async(self):
@@ -33,20 +36,49 @@ class Controller:
             self.view.log(f"Aviso: Não foi possível carregar modelos online: {e}")
             self.view.update_model_list(["Falha na conexão"], None)
 
-    def start_audit(self):
-        """Inicia o processo de auditoria em uma nova thread para não travar a GUI."""
+    def test_zabbix_connection(self):
         self.view.set_ui_state('disabled')
-        self.view.log("Iniciando auditoria...")
+        self.view.update_progress(0, "Testando conexão...")
+        threading.Thread(target=self._test_zabbix_flow, daemon=True).start()
+
+    def _test_zabbix_flow(self):
+        z_url = self.view.zabbix_url_var.get().strip()
+        z_user = self.view.zabbix_user_var.get().strip()
+        z_pass = self.view.zabbix_pass_var.get().strip()
+        try:
+            self.view.log(f"Testando conexão com o Zabbix em {z_url}...")
+            zabbix = zabbix_api.ZabbixClient(z_url, z_user, z_pass)
+            version = zabbix.discover_version()
+            if not version:
+                raise Exception("Não foi possível detectar a versão via API.")
+            zabbix.authenticate()
+            zabbix.logout()
+            self.view.log(f"✅ Conexão bem-sucedida! Versão do Zabbix: {version}")
+            self.view.update_progress(100, "Conexão Zabbix OK!")
+        except Exception as e:
+            self.view.log(f"❌ Falha na conexão com Zabbix: {e}", "danger")
+            self.view.update_progress(0, "Falha na conexão Zabbix.")
+        finally:
+            self.view.set_ui_state('normal')
+
+    def cancel_audit(self):
+        """Sinaliza para a thread de auditoria parar."""
+        self.cancel_event.set()
+        self.view.log("Aviso: Cancelamento solicitado pelo usuário. Interrompendo...", "warning")
+        self.view.update_progress(0, "Operação Cancelada.")
+        self.view.set_ui_state('normal')
+
+    def start_audit(self, use_cache=False):
+        """Inicia o processo de auditoria em uma nova thread para não travar a GUI."""
+        self.cancel_event.clear()
+        self.view.set_ui_state('disabled')
+        self.view.log("Iniciando auditoria (Usando Cache)..." if use_cache else "Iniciando auditoria (Nova Coleta)...")
         
-        # A execução da auditoria é feita em uma thread separada
-        audit_thread = threading.Thread(target=self.run_audit_flow)
+        audit_thread = threading.Thread(target=self.run_audit_flow, args=(use_cache,))
         audit_thread.daemon = True
         audit_thread.start()
 
-    def run_audit_flow(self):
-        """
-        Executa o fluxo completo da auditoria: autentica, coleta, gera relatório e desloga.
-        """
+    def run_audit_flow(self, use_cache):
         z_url = self.view.zabbix_url_var.get().strip()
         z_user = self.view.zabbix_user_var.get().strip()
         z_pass = self.view.zabbix_pass_var.get().strip()
@@ -60,22 +92,43 @@ class Controller:
             return
             
         try:
-            zabbix = zabbix_api.ZabbixClient(z_url, z_user, z_pass)
-            self.view.log(f"Conectando ao Zabbix em {z_url}...")
-            version = zabbix.discover_version()
-            if version:
-                self.view.log(f"Versão do Zabbix detectada: {version}")
+            zabbix_data = {}
+            if not use_cache:
+                self.view.update_progress(10, "Conectando ao Zabbix...")
+                zabbix = zabbix_api.ZabbixClient(z_url, z_user, z_pass)
+                self.view.log(f"Conectando ao Zabbix em {z_url}...")
+                version = zabbix.discover_version()
+                if version:
+                    self.view.log(f"Versão do Zabbix detectada: {version}")
+    
+                self.view.update_progress(20, "Autenticando no Zabbix...")
+                zabbix.authenticate()
+    
+                if self.cancel_event.is_set(): return
+                self.view.update_progress(30, "Coletando dados da API (Pode demorar)...")
+                self.view.log("Iniciando varredura profunda no Zabbix...")
+                zabbix_data = zabbix.collect_data()
+                self.view.log("Coleta de dados concluída com sucesso.")
+                
+                try:
+                    with open("last_audit_cache.json", "w", encoding="utf-8") as f:
+                        json.dump(zabbix_data, f, ensure_ascii=False)
+                except: pass
+            else:
+                self.view.update_progress(30, "Carregando dados do cache local...")
+                try:
+                    with open("last_audit_cache.json", "r", encoding="utf-8") as f:
+                        zabbix_data = json.load(f)
+                    self.view.log("Dados da última auditoria (cache) carregados com sucesso.")
+                except Exception as e:
+                    self.view.log("Erro: Não há cache salvo. Execute a Auditoria normal primeiro.", "danger")
+                    self.view.update_progress(0, "Erro de Cache.")
+                    return
 
-            self.view.log("Autenticando no Zabbix...")
-            zabbix.authenticate()
-            self.view.log("Autenticação realizada com sucesso.")
-
-            # 2. Coleta os dados
-            self.view.log("Iniciando varredura e extração via API...")
-            zabbix_data = zabbix.collect_data()
-            self.view.log("Coleta de dados concluída.")
+            if self.cancel_event.is_set(): return
 
             # 3. Gera o relatório com a IA
+            self.view.update_progress(50, "Processando evidências e sistema...")
             os_evidence_text = ""
             if self.view.attached_files:
                 self.view.log(f"Lendo e processando {len(self.view.attached_files)} arquivo(s) de evidência do SO...")
@@ -97,16 +150,30 @@ class Controller:
             
             custom_inst = self.view.custom_instructions_text.text.get("1.0", "end").strip()
 
+            if self.cancel_event.is_set(): return
+            self.view.update_progress(60, "Conectando à Inteligência Artificial...")
             self.view.log(f"Enviando dados para {ai_prov} (Modelo: {ai_mod}). Aguarde...")
             ai_client = ai_api.AIClient(ai_prov, ai_key)
-            report = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text, analyst_data, custom_inst)
-            self.view.log("Relatório gerado com sucesso!")
+            
+            self.view.clear_report()
+            self.view.notebook.select(2) # Troca a aba visual para o "Relatório Final" automaticamente
+            
+            self.view.update_progress(80, "Recebendo Stream da Inteligência Artificial...")
+            report_stream = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text, analyst_data, custom_inst)
+            
+            for chunk in report_stream:
+                if self.cancel_event.is_set():
+                    self.view.log("Geração abortada pelo usuário.", "warning")
+                    break
+                self.view.append_report_chunk(chunk)
 
-            # 4. Exibe o relatório na tela
-            self.view.show_report(report)
+            if not self.cancel_event.is_set():
+                self.view.log("Relatório gerado com sucesso!")
+                self.view.update_progress(100, "Auditoria Concluída!")
 
         except Exception as e:
             self.view.log(f"ERRO: {e}", "danger")
+            self.view.update_progress(0, "Erro durante a execução.")
         finally:
             if 'zabbix' in locals() and getattr(zabbix, 'auth_token', None):
                 zabbix.logout()

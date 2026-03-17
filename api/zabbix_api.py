@@ -128,6 +128,12 @@ class ZabbixClient:
             audit_data["monitored_hosts"] = len([h for h in hosts if h["status"] == "0"])
             audit_data["disabled_hosts"] = len([h for h in hosts if h["status"] == "1"])
             audit_data["disabled_hosts_samples"] = [h["host"] for h in hosts if h["status"] == "1"][:15]
+            
+        # Grupos de Hosts
+        try:
+            hgroups = self.api_call("hostgroup.get", {"output": ["name"]})
+            audit_data["total_host_groups"] = len(hgroups) if hgroups else 0
+        except Exception: pass
 
         # 3. Análise de Itens
         items = self.api_call("item.get", {
@@ -260,9 +266,59 @@ class ZabbixClient:
             audit_data["super_admin_users_samples"] = super_admins[:10]
         except Exception: pass
 
-        # 6. Proxies
-        proxies = self.api_call("proxy.get", {"output": "extend"})
-        audit_data["total_proxies"] = len(proxies) if proxies else 0
-        audit_data["proxies_details"] = proxies if proxies else []
+        # 7. Operação, ITSM e Automação
+        # Manutenções Ativas (Pontos Cegos)
+        try:
+            maintenances = self.api_call("maintenance.get", {"output": ["name", "active"]})
+            active_maint = [m for m in maintenances if str(m.get("active", "")) == "1"] if maintenances else []
+            audit_data["active_maintenances_count"] = len(active_maint)
+            audit_data["active_maintenances_samples"] = [m.get("name") for m in active_maint[:5]]
+        except Exception: pass
+
+        # Integrações / Canais de Notificação
+        try:
+            mediatypes = self.api_call("mediatype.get", {"output": ["name", "type"], "filter": {"status": "0"}})
+            audit_data["active_mediatypes_count"] = len(mediatypes) if mediatypes else 0
+            audit_data["active_mediatypes_samples"] = [m.get("name") for m in mediatypes] if mediatypes else []
+        except Exception: pass
+
+        # Serviços de Negócio (SLA/ITSM)
+        try:
+            services = self.api_call("service.get", {"output": ["name"]})
+            audit_data["business_services_count"] = len(services) if services else 0
+        except Exception: pass
+
+        # Scripts Globais de Frontend
+        try:
+            scripts = self.api_call("script.get", {"output": ["name"]})
+            audit_data["global_scripts_count"] = len(scripts) if scripts else 0
+            audit_data["global_scripts_samples"] = [s.get("name") for s in scripts[:5]] if scripts else []
+        except Exception: pass
+
+        # 8. Análise de Proxies
+        proxies_details = []
+        try:
+            proxies = self.api_call("proxy.get", {
+                "output": ["name", "operating_mode", "version", "lastaccess"],
+                "selectHosts": ["hostid"],
+                "selectProxyGroup": ["name"]
+            })
+            if proxies:
+                for proxy in proxies:
+                    proxy_detail = {
+                        "name": proxy.get("name"),
+                        "operating_mode": "Ativo" if proxy.get("operating_mode") == "0" else "Passivo",
+                        "version": proxy.get("version"),
+                        "lastaccess_timestamp": proxy.get("lastaccess"),
+                        "groups": [g['name'] for g in proxy.get('proxyGroups', [])],
+                        "host_count": len(proxy.get('hosts', [])),
+                    }
+                    proxies_details.append(proxy_detail)
+        except Exception as e:
+            # Em um ambiente de produção, seria ideal logar este erro para facilitar o debug.
+            # Ex: self.view.log(f"Aviso: Falha ao coletar detalhes dos proxies: {e}", "warning")
+            pass
+        audit_data["total_proxies"] = len(proxies_details)
+        audit_data["proxies_details"] = proxies_details
 
         return audit_data

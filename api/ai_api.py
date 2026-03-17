@@ -74,12 +74,18 @@ class AIClient:
         if self.provider == "Google Gemini":
             genai.configure(api_key=self.api_key)
             model = genai.GenerativeModel(model_name, system_instruction="Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido.")
-            return model.generate_content(prompt).text
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                yield chunk.text
             
         elif self.provider == "OpenAI":
             client = openai.OpenAI(api_key=self.api_key)
-            response = client.chat.completions.create(model=model_name, messages=[{"role": "system", "content": "Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido."}, {"role": "user", "content": prompt}])
-            return response.choices[0].message.content
+            response = client.chat.completions.create(model=model_name, messages=[{"role": "system", "content": "Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido."}, {"role": "user", "content": prompt}], stream=True)
+            for chunk in response:
+                if chunk.choices and len(chunk.choices) > 0:
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        yield content
             
         elif self.provider == "Anthropic":
             client = anthropic.Anthropic(api_key=self.api_key)
@@ -87,9 +93,12 @@ class AIClient:
                 model=model_name,
                 max_tokens=4096,
                 system="Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido.",
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
+                stream=True
             )
-            return response.content[0].text
+            for event in response:
+                if event.type == "content_block_delta":
+                    yield event.delta.text
             
         elif self.provider == "Ollama":
             base_url = self.api_key.rstrip('/')
@@ -98,8 +107,11 @@ class AIClient:
                 "model": model_name,
                 "system": "Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido.",
                 "prompt": prompt,
-                "stream": False
+                "stream": True
             }
-            resp = requests.post(f"{base_url}/api/generate", json=payload, timeout=300) # Timeout alto pois IA local pode demorar
+            resp = requests.post(f"{base_url}/api/generate", json=payload, stream=True, timeout=300)
             resp.raise_for_status()
-            return resp.json().get("response", "")
+            for line in resp.iter_lines():
+                if line:
+                    data = json.loads(line.decode('utf-8'))
+                    yield data.get("response", "")

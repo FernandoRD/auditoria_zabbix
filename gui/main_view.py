@@ -13,12 +13,16 @@ from dotenv import load_dotenv
 import html
 from datetime import datetime
 import pathlib
+import uuid
+from gui.manage_accounts_view import ManageAccountsWindow
+from gui.style_settings_view import StyleSettingsWindow
+from gui.manage_attachments_view import ManageAttachmentsWindow
 
 class MainView(ttk.Window):
     def __init__(self):
         super().__init__(themename="darkly")
         self.title("Auditoria Inteligente de Zabbix")
-        self.geometry("1000x750")
+        self.geometry("1000x780")
         self.controller = None
 
         # Carrega defaults do .env (se existir)
@@ -150,11 +154,28 @@ class MainView(ttk.Window):
 
         self.start_button = ttk.Button(
             control_frame,
-            text="Iniciar Auditoria",
+            text="▶ Iniciar Auditoria",
             command=self.start_audit_clicked,
             bootstyle="success-outline"
         )
         self.start_button.pack(side=LEFT, padx=(0, 10))
+        
+        self.regerar_button = ttk.Button(
+            control_frame,
+            text="🔄 Regerar (Apenas IA)",
+            command=self.regerar_audit_clicked,
+            bootstyle="info"
+        )
+        self.regerar_button.pack(side=LEFT, padx=(0, 5))
+
+        self.cancel_button = ttk.Button(
+            control_frame,
+            text="⏹ Cancelar",
+            command=self.cancel_audit_clicked,
+            bootstyle="danger",
+            state="disabled"
+        )
+        self.cancel_button.pack(side=LEFT, padx=(0, 10))
 
         ttk.Label(control_frame, text="Modelo IA:").pack(side=LEFT, padx=(10, 5))
         self.model_var = ttk.StringVar()
@@ -187,13 +208,21 @@ class MainView(ttk.Window):
         self.files_label = ttk.Label(control_frame, text="")
         self.files_label.pack(side=LEFT)
 
+        # --- Progress Bar (Bottom) ---
+        progress_frame = ttk.Frame(main_frame)
+        progress_frame.pack(fill=X, side=tk.BOTTOM, pady=(10, 0))
+        self.status_var = ttk.StringVar(value="Pronto.")
+        ttk.Label(progress_frame, textvariable=self.status_var, width=35).pack(side=LEFT)
+        self.progress_bar = ttk.Progressbar(progress_frame, mode='determinate', maximum=100)
+        self.progress_bar.pack(side=LEFT, fill=X, expand=True, padx=(10, 0))
+
         # --- Notebook (Abas) ---
-        notebook = ttk.Notebook(main_frame)
-        notebook.pack(fill=BOTH, expand=True)
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=BOTH, expand=True, side=tk.TOP)
 
         # 1. Aba de Configurações
-        config_frame = ttk.Frame(notebook, padding=15)
-        notebook.add(config_frame, text="⚙️ Configurações")
+        config_frame = ttk.Frame(self.notebook, padding=15)
+        self.notebook.add(config_frame, text="⚙️ Configurações")
         
         z_frame = ttk.LabelFrame(config_frame, text="Credenciais do Zabbix")
         z_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
@@ -206,6 +235,9 @@ class MainView(ttk.Window):
         
         ttk.Label(z_frame, text="Senha:").grid(row=2, column=0, sticky="w", pady=5)
         ttk.Entry(z_frame, textvariable=self.zabbix_pass_var, width=30, show="*").grid(row=2, column=1, sticky="w", pady=5, padx=5)
+        
+        self.test_zabbix_button = ttk.Button(z_frame, text="🔌 Testar Conexão", command=self.test_zabbix_clicked, bootstyle="info-outline")
+        self.test_zabbix_button.grid(row=2, column=2, padx=5)
         
         ai_frame = ttk.LabelFrame(config_frame, text="Inteligência Artificial")
         ai_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
@@ -253,24 +285,24 @@ class MainView(ttk.Window):
         ttk.Button(export_frame, text="🎨 Configurar Estilos de Gráfico", command=self.open_style_settings_window, bootstyle="info-outline").pack(side=LEFT, padx=10, pady=5)
 
         # 2. Aba de Logs
-        log_frame = ttk.Frame(notebook, padding=5)
+        log_frame = ttk.Frame(self.notebook, padding=5)
         self.log_text = ScrolledText(log_frame, wrap=WORD, autohide=True, state="disabled")
         self.log_text.pack(fill=BOTH, expand=True)
         
         log_btn_frame = ttk.Frame(log_frame)
         log_btn_frame.pack(fill=X, pady=(5, 0))
         ttk.Button(log_btn_frame, text="💾 Salvar Logs", command=self.save_logs_clicked, bootstyle="secondary").pack(side=LEFT)
-        notebook.add(log_frame, text="Logs da Execução")
+        self.notebook.add(log_frame, text="Logs da Execução")
 
         # 3. Aba de Relatório
-        report_frame = ttk.Frame(notebook, padding=5)
+        report_frame = ttk.Frame(self.notebook, padding=5)
         self.report_text = ScrolledText(report_frame, wrap=WORD, autohide=True, state="disabled")
         self.report_text.pack(fill=BOTH, expand=True)
         
         report_btn_frame = ttk.Frame(report_frame)
         report_btn_frame.pack(fill=X, pady=(5, 0))
         ttk.Button(report_btn_frame, text="💾 Salvar / Exportar Relatório", command=self.save_report_clicked, bootstyle="primary").pack(side=LEFT)
-        notebook.add(report_frame, text="Relatório Final")
+        self.notebook.add(report_frame, text="Relatório Final")
 
     def update_model_list(self, models, default_model=None):
         self.model_combo['values'] = models
@@ -348,7 +380,7 @@ class MainView(ttk.Window):
         temp_dir = tempfile.mkdtemp(prefix="zabbix_audit_charts_")
         modified_markdown = markdown_content
         
-        mermaid_regex = re.compile(r"```mermaid\n(.*?)\n```", re.DOTALL)
+        mermaid_regex = re.compile(r"```mermaid\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
         matches = list(mermaid_regex.finditer(modified_markdown))
 
         if not matches:
@@ -356,7 +388,6 @@ class MainView(ttk.Window):
             return markdown_content, None
 
         self.log(f"Encontrados {len(matches)} gráficos Mermaid. Renderizando com Playwright...", "info")
-        self.update()
         
         template_path = os.path.join("templates", "mermaid_template.html")
         try:
@@ -454,39 +485,47 @@ class MainView(ttk.Window):
                 return
                 
             # Limpa bloco de código caso a IA tenha encapsulado toda a resposta
-            clean_content = report_content
-            if clean_content.startswith("```markdown"):
-                clean_content = clean_content[11:]
-            elif clean_content.startswith("```md"):
-                clean_content = clean_content[5:]
-            elif clean_content.startswith("```"):
-                clean_content = clean_content[3:]
-                
-            if clean_content.endswith("```"):
-                clean_content = clean_content[:-3]
-                
-            report_content = clean_content.strip()
+            m = re.match(r"^```(?:markdown|md)?\s*\n(.*)\n```$", report_content, re.DOTALL | re.IGNORECASE)
+            if m:
+                report_content = m.group(1).strip()
             
             ext = os.path.splitext(file_path)[1].lower()
             
+            author_name = self.analyst_name_var.get().strip()
+            company_name = self.analyst_company_var.get().strip()
+            
+            self.log(f"Iniciando exportação para {ext}... Aguarde.", "info")
+            
+            # Passa a lógica pesada de exportação para uma Thread separada
+            thread = threading.Thread(
+                target=self._export_report_thread, 
+                args=(file_path, ext, report_content, author_name, company_name)
+            )
+            thread.daemon = True
+            thread.start()
+
+        except Exception as e:
+            self.log(f"Erro inesperado: {e}", "danger")
+
+    def _export_report_thread(self, file_path, ext, report_content, author_name, company_name):
+        temp_dir_to_clean = None
+        try:
             processed_content = report_content
             if ext in ['.pdf', '.docx', '.odt']:
                 processed_content, temp_dir_to_clean = self._render_mermaid_charts(report_content)
             
             if ext in ['.md', '.txt', '']:
                 with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(report_content)
+                    f.write(processed_content)
                 self.log(f"Relatório salvo com sucesso em: {file_path}")
             else:
-                self.log(f"Convertendo relatório para {ext}... Aguarde (pode demorar).", "info")
-                self.update()
+                self.log(f"Convertendo relatório para {ext}... Aguarde.", "info")
                 
                 import pypandoc
                 try:
                     pypandoc.get_pandoc_version()
                 except OSError:
                     self.log("Pandoc não encontrado. Baixando e instalando...", "warning")
-                    self.update()
                     pypandoc.download_pandoc()
                 
                 to_format = 'pdf' if ext == '.pdf' else ext.replace('.', '')
@@ -499,12 +538,9 @@ class MainView(ttk.Window):
                         self.log(f"Usando template Word: {reference_doc_path}", "info")
                 
                 if to_format == 'pdf':
-                    # Exportação de PDF usando Playwright + HTML (Elimina necessidade de LaTeX)
                     try:
                         html_body = pypandoc.convert_text(processed_content, 'html', format='gfm+hard_line_breaks')
                         
-                        author_name = self.analyst_name_var.get().strip()
-                        company_name = self.analyst_company_var.get().strip()
                         author_field = author_name if author_name else "Analista de Monitoramento"
                         if company_name:
                             author_field += f" - {company_name}"
@@ -538,7 +574,7 @@ class MainView(ttk.Window):
                         </body></html>
                         """
                         
-                        temp_html_path = os.path.join(tempfile.gettempdir(), "zabbix_report_temp.html")
+                        temp_html_path = os.path.join(tempfile.gettempdir(), f"zabbix_report_temp_{uuid.uuid4().hex}.html")
                         with open(temp_html_path, "w", encoding="utf-8") as f:
                             f.write(full_html)
                         
@@ -580,7 +616,26 @@ class MainView(ttk.Window):
     def start_audit_clicked(self):
         self.save_settings()
         if self.controller:
-            self.controller.start_audit()
+            self.controller.start_audit(use_cache=False)
+            
+    def regerar_audit_clicked(self):
+        self.save_settings()
+        if self.controller:
+            self.controller.start_audit(use_cache=True)
+            
+    def cancel_audit_clicked(self):
+        if self.controller:
+            self.controller.cancel_audit()
+            
+    def test_zabbix_clicked(self):
+        self.save_settings()
+        if self.controller:
+            self.controller.test_zabbix_connection()
+            
+    def update_progress(self, value, text):
+        self.progress_bar['value'] = value
+        self.status_var.set(text)
+        self.update_idletasks()
 
     def log(self, message, style="info"):
         self.log_text.text.configure(state="normal")
@@ -588,14 +643,24 @@ class MainView(ttk.Window):
         self.log_text.text.see(END) # Auto-scroll
         self.log_text.text.configure(state="disabled")
 
-    def show_report(self, report_content):
+    def clear_report(self):
         self.report_text.text.configure(state="normal")
         self.report_text.text.delete("1.0", END)
-        self.report_text.text.insert("1.0", report_content)
         self.report_text.text.configure(state="disabled")
+        
+    def append_report_chunk(self, chunk):
+        def _append():
+            self.report_text.text.configure(state="normal")
+            self.report_text.text.insert(END, chunk)
+            self.report_text.text.see(END)
+            self.report_text.text.configure(state="disabled")
+        self.after(0, _append)
 
     def set_ui_state(self, state):
         self.start_button.configure(state=state)
+        if hasattr(self, 'regerar_button'): self.regerar_button.configure(state=state)
+        if hasattr(self, 'test_zabbix_button'): self.test_zabbix_button.configure(state=state)
+        if hasattr(self, 'cancel_button'): self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")
 
 class ManageAccountsWindow(ttk.Toplevel):
     def __init__(self, parent):
