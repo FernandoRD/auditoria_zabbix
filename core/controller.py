@@ -94,10 +94,12 @@ class Controller:
                 "email": self.view.analyst_email_var.get().strip(),
                 "phone": self.view.analyst_phone_var.get().strip()
             }
+            
+            custom_inst = self.view.custom_instructions_text.text.get("1.0", "end").strip()
 
             self.view.log(f"Enviando dados para {ai_prov} (Modelo: {ai_mod}). Aguarde...")
             ai_client = ai_api.AIClient(ai_prov, ai_key)
-            report = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text, analyst_data)
+            report = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text, analyst_data, custom_inst)
             self.view.log("Relatório gerado com sucesso!")
 
             # 4. Exibe o relatório na tela

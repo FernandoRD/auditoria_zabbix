@@ -43,7 +43,7 @@ class AIClient:
             
         return []
 
-    def generate_audit_report(self, audit_data, model_name, os_evidence="", analyst_info=None):
+    def generate_audit_report(self, audit_data, model_name, os_evidence="", analyst_info=None, custom_instructions=""):
         """
         Gera o relatório com o provedor dinâmico.
         """
@@ -60,12 +60,14 @@ class AIClient:
             if analyst_info.get('phone'): analyst_section += f"- Telefone: {analyst_info['phone']}\n"
             analyst_section += "\nIMPORTANTE: Adicione estes dados de autoria no cabeçalho principal do relatório Markdown.\n"
 
+        custom_instructions_section = f"\n\nInstruções Adicionais do Analista:\n{custom_instructions}\n" if custom_instructions else ""
+
         try:
             prompt_template_path = os.path.join('prompts', 'report_template.txt')
             with open(prompt_template_path, 'r', encoding='utf-8') as f:
                 prompt_template = f.read()
             
-            prompt = prompt_template.format(data_str=data_str, evidence_section=evidence_section, current_date=current_date, analyst_section=analyst_section)
+            prompt = prompt_template.format(data_str=data_str, evidence_section=evidence_section, current_date=current_date, analyst_section=analyst_section, custom_instructions_section=custom_instructions_section)
         except FileNotFoundError:
             raise FileNotFoundError("Arquivo de template de prompt 'prompts/report_template.txt' não encontrado.")
 

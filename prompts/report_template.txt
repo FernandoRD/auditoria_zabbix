@@ -7,6 +7,7 @@ A data atual de geração deste relatório é: {current_date}. Utilize esta data
 Aqui estão os dados brutos coletados do ambiente, incluindo a saúde atual dos processos internos do Zabbix, em formato JSON:
 {data_str}
 {evidence_section}
+{custom_instructions_section}
 
 Com base EXCLUSIVAMENTE nestes dados e no seu conhecimento sobre as melhores práticas oficiais da Zabbix, elabore um relatório técnico detalhado e profissional direcionado à equipe de infraestrutura do cliente. O relatório DEVE conter os seguintes tópicos estruturados:
 

@@ -18,7 +18,7 @@ class MainView(ttk.Window):
     def __init__(self):
         super().__init__(themename="darkly")
         self.title("Auditoria Inteligente de Zabbix")
-        self.geometry("900x700")
+        self.geometry("1000x750")
         self.controller = None
 
         # Carrega defaults do .env (se existir)
@@ -52,6 +52,8 @@ class MainView(ttk.Window):
 
         self.chart_type_var = ttk.StringVar(value=self.settings.get("chart_type", "Linha"))
         self.chart_color_var = ttk.StringVar(value=self.settings.get("chart_color", "Padrão"))
+
+        self.custom_instructions_var = self.settings.get("custom_instructions", "")
 
         # Rastreadores (Traces) para detectar alterações na interface e mudar a chave correta
         self.ai_key_var.trace_add("write", self.update_key_dict)
@@ -92,6 +94,7 @@ class MainView(ttk.Window):
         self.settings["chart_font"] = self.chart_font_var.get()
         self.settings["chart_type"] = self.chart_type_var.get()
         self.settings["chart_color"] = self.chart_color_var.get()
+        self.settings["custom_instructions"] = self.custom_instructions_text.text.get("1.0", END).strip()
         if "api_keys" in self.settings:
             del self.settings["api_keys"]
         try:
@@ -236,6 +239,13 @@ class MainView(ttk.Window):
         
         ttk.Label(analyst_frame, text="Telefone:").grid(row=1, column=2, sticky="w", pady=5, padx=(10, 0))
         ttk.Entry(analyst_frame, textvariable=self.analyst_phone_var, width=30).grid(row=1, column=3, sticky="w", pady=5, padx=5)
+
+        # --- Instruções Customizadas ---
+        inst_frame = ttk.LabelFrame(config_frame, text="Instruções Customizadas para a IA")
+        inst_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
+        self.custom_instructions_text = ScrolledText(inst_frame, wrap=WORD, height=4, autohide=True)
+        self.custom_instructions_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        self.custom_instructions_text.text.insert(END, self.custom_instructions_var)
 
         # --- Estilos de Gráfico e Exportação ---
         export_frame = ttk.LabelFrame(config_frame, text="Aparência e Exportação")
