@@ -88,9 +88,16 @@ class Controller:
                     except Exception as e:
                         self.view.log(f"Aviso: Não foi possível ler o arquivo {filepath}: {e}")
 
+            analyst_data = {
+                "name": self.view.analyst_name_var.get().strip(),
+                "company": self.view.analyst_company_var.get().strip(),
+                "email": self.view.analyst_email_var.get().strip(),
+                "phone": self.view.analyst_phone_var.get().strip()
+            }
+
             self.view.log(f"Enviando dados para {ai_prov} (Modelo: {ai_mod}). Aguarde...")
             ai_client = ai_api.AIClient(ai_prov, ai_key)
-            report = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text)
+            report = ai_client.generate_audit_report(zabbix_data, ai_mod, os_evidence_text, analyst_data)
             self.view.log("Relatório gerado com sucesso!")
 
             # 4. Exibe o relatório na tela

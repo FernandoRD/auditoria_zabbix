@@ -64,6 +64,56 @@ class ZabbixClient:
             except Exception:
                 pass
 
+    def get_active_node_hostid(self):
+        """Identifica o hostid do nó Ativo em um cluster HA ou Standalone."""
+        # 1. Tenta API Nativa de High Availability (Zabbix 6.0+)
+        try:
+            nodes = self.api_call("hanode.get", {"filter": {"status": "3"}}) # 3 = Active
+            if nodes and len(nodes) > 0:
+                node_name = nodes[0].get("name")
+                if node_name:
+                    hosts = self.api_call("host.get", {"filter": {"host": node_name}})
+                    if hosts:
+                        return hosts[0]["hostid"]
+        except Exception:
+            pass
+            
+        # 2. Descobre ativamente rastreando itens internos com dados recentes (À prova de falhas)
+        try:
+            internal_items = self.api_call("item.get", {
+                "output": ["itemid", "hostid", "value_type"],
+                "search": {"key_": "zabbix[process,poller"},
+                "filter": {"type": "5", "status": "0"}
+            })
+            if internal_items:
+                host_history = {}
+                for item in internal_items:
+                    hid = item["hostid"]
+                    vtype = item["value_type"]
+                    hist = self.api_call("history.get", {
+                        "output": ["clock"],
+                        "itemids": item["itemid"],
+                        "history": vtype,
+                        "sortfield": "clock",
+                        "sortorder": "DESC",
+                        "limit": 1
+                    })
+                    if hist:
+                        host_history[hid] = int(hist[0]["clock"])
+                if host_history:
+                    return max(host_history, key=host_history.get)
+        except Exception:
+            pass
+            
+        # 3. Fallback genérico para Zabbix Standalone clássico
+        try:
+            hosts = self.api_call("host.get", {"filter": {"host": "Zabbix server"}})
+            if hosts:
+                return hosts[0]["hostid"]
+        except Exception:
+            pass
+        return None
+
     def collect_data(self):
         audit_data = {}
         audit_data["zabbix_version"] = self.api_version
@@ -109,12 +159,18 @@ class ZabbixClient:
             audit_data["db_web_templates_in_use"] = [name for name in template_names if any(kw in name.lower() for kw in db_web_keywords)]
 
         # 5. Coleta de Histórico: Saúde Interna
-        internal_items = self.api_call("item.get", {
+        active_hostid = self.get_active_node_hostid()
+        item_params = {
             "output": ["itemid", "name", "key_", "value_type"],
             "filter": {"type": "5", "status": "0"},
             "search": {"key_": "zabbix["},
             "limit": 200
-        })
+        }
+        
+        if active_hostid:
+            item_params["hostids"] = active_hostid
+            
+        internal_items = self.api_call("item.get", item_params)
         server_health = []
         if internal_items:
             for item in internal_items:

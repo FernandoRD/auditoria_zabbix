@@ -1,18 +1,23 @@
-# 📊 Auditoria Inteligente de Zabbix com IA (Google Gemini)
+# 📊 Auditoria Inteligente de Zabbix com IA
 
-Uma ferramenta avançada com interface gráfica (GUI) desenvolvida em Python que realiza a extração de métricas vitais de um ambiente Zabbix via API e utiliza a Inteligência Artificial do Google Gemini para gerar um relatório de auditoria técnico, detalhado e priorizado.
+Uma ferramenta avançada com interface gráfica (GUI) desenvolvida em Python que realiza a extração de métricas vitais de um ambiente Zabbix (Standalone ou Cluster HA) via API e utiliza Inteligência Artificial para gerar um relatório de auditoria técnico, detalhado e priorizado.
 
 Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura que precisam diagnosticar rapidamente a saúde de um ambiente Zabbix.
 
 ## ✨ Funcionalidades
 
+- **Suporte Multi-IA**: Compatível com provedores líderes de mercado (**Google Gemini**, **OpenAI**, **Anthropic Claude**) e suporte a execução de LLMs locais via **Ollama** para ambientes restritos ou isolados.
 - **Extração Automatizada via Zabbix API**: Coleta dados de Hosts, Itens (identificando polling agressivo e scripts externos), Templates e Proxies.
+- **Inteligência de Cluster (HA Nativo)**: Descobre automaticamente qual é o nó *Active* do servidor em ambientes de Alta Disponibilidade para coletar métricas reais, ignorando nós *Standby*.
 - **Análise de Saúde Interna (Zabbix Health)**: Extrai o histórico recente de processos internos críticos (pollers, history syncers, caches, queue).
 - **Suporte Multi-Versão**: Identifica automaticamente a versão do Zabbix (suporta métodos de autenticação antigos via Payload e novos `>= 6.4` via Header Bearer).
-- **Integração com Google Gemini**: Envia o JSON extraído para a IA, que atua como um Arquiteto Zabbix, gerando um plano de ação em Markdown.
-- **Gráficos ASCII**: A IA gera automaticamente mini-gráficos em texto demonstrando tendências de degradação ou estabilidade dos processos do Zabbix.
+- **Gráficos Avançados e Customizáveis**: A IA projeta gráficos de tendência usando Mermaid.js. Através da interface, o analista pode personalizar o tipo de gráfico (Linhas ou Barras), cores e fontes, contando com uma **pré-visualização em tempo real**.
+- **Exportação Profissional e Elegante**:
+  - **PDF (.pdf)**: Renderização direta baseada em Chromium via *Playwright*. Gera automaticamente uma Capa de Rosto com os dados do auditor/empresa, paginação inteligente, fontes modernas (Helvetica/Arial) e não depende de LaTeX.
+  - **Word (.docx)**: Aplica nativamente a estruturação de um template base customizável.
+  - **Outros**: Markdown (.md), Texto Puro (.txt) e OpenDocument (.odt).
 - **Análise de Evidências de SO**: Permite anexar arquivos de log e configurações do Sistema Operacional (ex: `zabbix_server.conf`, uso de disco/memória) para que a IA cruze informações da API com gargalos no SO.
-- **Interface Gráfica Amigável**: Construída com `ttkbootstrap` (tema Darkly), operando de forma assíncrona (multithreading) para não travar durante as requisições.
+- **Interface de Usuário Robusta**: Construída com `ttkbootstrap` (tema Darkly), é assíncrona (multithread) impedindo congelamentos da interface e possui menu de gerenciamento de chaves de API.
 
 ---
 
@@ -21,16 +26,18 @@ Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura 
 ```text
 auditoria_zabbix/
 ├── api/
-│   ├── gemini_api.py      # Integração e prompts do Google Gemini
+│   ├── ai_api.py          # Integração unificada (Gemini, OpenAI, Anthropic, Ollama)
 │   └── zabbix_api.py      # Comunicação e métodos da Zabbix API
 ├── core/
 │   └── controller.py      # Lógica de negócio e orquestração de Threads
 ├── gui/
 │   └── main_view.py       # Interface de usuário (ttkbootstrap)
-├── scripts/ (ou tools/)
-│   └── coleta_zabbix_os.sh # Script bash para extração de evidências do SO
+├── prompts/
+│   └── report_template.txt # Template injetável do contexto enviado para a IA
+├── templates/
+│   ├── mermaid_template.html # Template base para renderização vetorial de gráficos
+│   └── report_template.docx  # Documento de referência do Pandoc (se existir)
 ├── .env.example           # Exemplo de arquivo de credenciais
-├── config.py              # Carregamento de variáveis de ambiente
 ├── main.py                # Ponto de entrada da aplicação
 └── requirements.txt       # Dependências do projeto
 ```
@@ -54,6 +61,9 @@ source venv/bin/activate  # No Windows: venv\Scripts\activate
 
 # Instale as dependências
 pip install -r requirements.txt
+
+# (Apenas na primeira vez) Instale os navegadores para o Playwright renderizar os gráficos
+playwright install
 ```
 
 ### 3. Configuração de Credenciais

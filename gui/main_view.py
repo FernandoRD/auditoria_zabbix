@@ -1,10 +1,18 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.constants import BOTH, X, LEFT, RIGHT, WORD, END
+import tkinter as tk
+import threading
 from tkinter import filedialog
 import os
+import re
 import json
+import shutil
+import tempfile
 from dotenv import load_dotenv
+import html
+from datetime import datetime
+import pathlib
 
 class MainView(ttk.Window):
     def __init__(self):
@@ -34,6 +42,16 @@ class MainView(ttk.Window):
         self.zabbix_pass_var = ttk.StringVar(value=self.settings.get("zabbix_pass", os.getenv("ZABBIX_PASS", "")))
         self.ai_provider_var = ttk.StringVar(value=default_account)
         self.ai_key_var = ttk.StringVar(value=self.ai_accounts.get(default_account, {}).get("api_key", ""))
+
+        self.analyst_name_var = ttk.StringVar(value=self.settings.get("analyst_name", ""))
+        self.analyst_company_var = ttk.StringVar(value=self.settings.get("analyst_company", ""))
+        self.analyst_email_var = ttk.StringVar(value=self.settings.get("analyst_email", ""))
+        self.analyst_phone_var = ttk.StringVar(value=self.settings.get("analyst_phone", ""))
+
+        self.chart_font_var = ttk.StringVar(value=self.settings.get("chart_font", "Arial, Helvetica, sans-serif"))
+
+        self.chart_type_var = ttk.StringVar(value=self.settings.get("chart_type", "Linha"))
+        self.chart_color_var = ttk.StringVar(value=self.settings.get("chart_color", "Padrão"))
 
         # Rastreadores (Traces) para detectar alterações na interface e mudar a chave correta
         self.ai_key_var.trace_add("write", self.update_key_dict)
@@ -65,6 +83,15 @@ class MainView(ttk.Window):
         self.settings["zabbix_pass"] = self.zabbix_pass_var.get()
         self.settings["ai_account"] = self.ai_provider_var.get()
         self.settings["ai_accounts"] = self.ai_accounts
+        
+        self.settings["analyst_name"] = self.analyst_name_var.get()
+        self.settings["analyst_company"] = self.analyst_company_var.get()
+        self.settings["analyst_email"] = self.analyst_email_var.get()
+        self.settings["analyst_phone"] = self.analyst_phone_var.get()
+        
+        self.settings["chart_font"] = self.chart_font_var.get()
+        self.settings["chart_type"] = self.chart_type_var.get()
+        self.settings["chart_color"] = self.chart_color_var.get()
         if "api_keys" in self.settings:
             del self.settings["api_keys"]
         try:
@@ -96,6 +123,9 @@ class MainView(ttk.Window):
 
     def open_manage_accounts_window(self):
         ManageAccountsWindow(self)
+        
+    def open_style_settings_window(self):
+        StyleSettingsWindow(self)
         
     def refresh_accounts(self, select_account=""):
         account_names = list(self.ai_accounts.keys())
@@ -182,6 +212,27 @@ class MainView(ttk.Window):
         
         ttk.Button(ai_frame, text="🔄 Validar Conexão / Atualizar Modelos", command=self.validate_and_load_models, bootstyle="info-outline").grid(row=1, column=2, padx=5)
 
+        # --- Dados do Analista ---
+        analyst_frame = ttk.LabelFrame(config_frame, text="Dados do Analista / Empresa (Cabeçalho do Relatório)")
+        analyst_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
+        
+        ttk.Label(analyst_frame, text="Nome:").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Entry(analyst_frame, textvariable=self.analyst_name_var, width=30).grid(row=0, column=1, sticky="w", pady=5, padx=5)
+        
+        ttk.Label(analyst_frame, text="Empresa:").grid(row=0, column=2, sticky="w", pady=5, padx=(10, 0))
+        ttk.Entry(analyst_frame, textvariable=self.analyst_company_var, width=30).grid(row=0, column=3, sticky="w", pady=5, padx=5)
+        
+        ttk.Label(analyst_frame, text="E-mail:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Entry(analyst_frame, textvariable=self.analyst_email_var, width=30).grid(row=1, column=1, sticky="w", pady=5, padx=5)
+        
+        ttk.Label(analyst_frame, text="Telefone:").grid(row=1, column=2, sticky="w", pady=5, padx=(10, 0))
+        ttk.Entry(analyst_frame, textvariable=self.analyst_phone_var, width=30).grid(row=1, column=3, sticky="w", pady=5, padx=5)
+
+        # --- Estilos de Gráfico e Exportação ---
+        export_frame = ttk.LabelFrame(config_frame, text="Aparência e Exportação")
+        export_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
+        ttk.Button(export_frame, text="🎨 Configurar Estilos de Gráfico", command=self.open_style_settings_window, bootstyle="info-outline").pack(side=LEFT, padx=10, pady=5)
+
         # 2. Aba de Logs
         log_frame = ttk.Frame(notebook, padding=5)
         self.log_text = ScrolledText(log_frame, wrap=WORD, autohide=True, state="disabled")
@@ -248,101 +299,250 @@ class MainView(ttk.Window):
             except Exception as e:
                 self.log(f"Erro ao salvar logs: {e}")
 
+    def _render_mermaid_charts(self, markdown_content):
+        """
+        Finds Mermaid blocks, renders them as images using a headless browser (Playwright), 
+        and replaces the blocks with image links.
+        Returns the modified markdown and the path to the temporary directory created.
+        """
+        try:
+            from playwright.sync_api import sync_playwright, Error as PlaywrightError
+        except ImportError:
+            self.log("Aviso: Biblioteca 'playwright' não instalada.", "warning")
+            self.log("Execute 'pip install playwright' e 'playwright install' para habilitar a renderização de gráficos.", "warning")
+            return markdown_content, None
+
+        temp_dir = tempfile.mkdtemp(prefix="zabbix_audit_charts_")
+        modified_markdown = markdown_content
+        
+        mermaid_regex = re.compile(r"```mermaid\n(.*?)\n```", re.DOTALL)
+        matches = list(mermaid_regex.finditer(modified_markdown))
+
+        if not matches:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return markdown_content, None
+
+        self.log(f"Encontrados {len(matches)} gráficos Mermaid. Renderizando com Playwright...", "info")
+        self.update()
+        
+        template_path = os.path.join("templates", "mermaid_template.html")
+        try:
+            with open(template_path, "r", encoding="utf-8") as f:
+                base_html = f.read()
+        except FileNotFoundError:
+            self.log(f"Erro: Arquivo '{template_path}' não encontrado. Abortando renderização.", "danger")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return markdown_content, None
+
+        chart_font = self.chart_font_var.get()
+        chart_type = self.chart_type_var.get()
+        chart_color = self.chart_color_var.get()
+        ctype_en = "bar" if chart_type == "Barra" else "line"
+        color_map = {"Padrão": "", "Azul": "#3498db", "Vermelho": "#e74c3c", "Verde": "#2ecc71", "Laranja": "#e67e22", "Roxo": "#9b59b6"}
+        hex_color = color_map.get(chart_color, "")
+        theme_vars = f",\n                                themeVariables: {{ xyChart: {{ plotColorPalette: '{hex_color}' }} }}" if hex_color else ""
+        
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page()
+
+                for i, match in enumerate(reversed(matches)):
+                    chart_index = len(matches) - 1 - i
+                    code = match.group(1)
+                    # Corrige alucinações comuns da IA e força a escolha do usuário
+                    code = re.sub(r'^(?:lineChart|barChart)', 'xychart-beta', code, flags=re.MULTILINE)
+                    code = re.sub(r'^\s*data:\s*\[', f'  {ctype_en} [', code, flags=re.MULTILINE)
+                    code = re.sub(r'^\s*(?:line|bar)\s*\[', f'  {ctype_en} [', code, flags=re.MULTILINE)
+                    output_file_path = os.path.join(temp_dir, f"chart_{chart_index}.png")
+
+                    html_content = base_html.replace("__EXTRA_STYLE__", "").replace(
+                        "__CODE__", html.escape(code)).replace(
+                        "__FONT__", chart_font).replace(
+                        "__THEME_VARS__", theme_vars)
+
+                    try:
+                        page.set_content(html_content)
+                        page.wait_for_selector('#mermaid-container > svg', timeout=15000)
+                        chart_element = page.locator('#mermaid-container > svg')
+                        
+                        chart_element.screenshot(path=output_file_path)
+
+                        image_link_path = output_file_path.replace('\\', '/')
+                        image_link = f"![Gráfico Mermaid {chart_index+1}]({image_link_path})"
+                        start, end = match.span()
+                        modified_markdown = modified_markdown[:start] + image_link + modified_markdown[end:]
+                        self.log(f"Gráfico {chart_index+1} renderizado com sucesso.", "info")
+
+                    except Exception as e:
+                        self.log(f"Erro ao renderizar gráfico Mermaid {chart_index+1} com Playwright: {e}", "danger")
+                        continue
+                
+                browser.close()
+        except PlaywrightError:
+            self.log("Erro no Playwright: Navegadores não encontrados.", "danger")
+            self.log("Execute 'playwright install' no seu terminal para baixar os navegadores.", "danger")
+            self.log("A exportação continuará, mas os gráficos aparecerão como blocos de código.", "warning")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return markdown_content, None
+        
+        return modified_markdown, temp_dir
+
     def save_report_clicked(self):
         initial_dir = self.settings.get("last_report_dir", os.path.expanduser("~"))
-        
         type_var = ttk.StringVar(value="Markdown")
-        filetypes_list = [
-            ("Markdown", "*.md"),
-            ("Word Document", "*.docx"),
-            ("PDF", "*.pdf"),
-            ("OpenDocument Text", "*.odt"),
-            ("Texto Puro", "*.txt"),
-            ("Todos os arquivos", "*.*")
-        ]
-        
+        filetypes_list = [("Markdown", "*.md"), ("Word Document", "*.docx"), ("PDF", "*.pdf"), ("OpenDocument Text", "*.odt"), ("Texto Puro", "*.txt"), ("Todos os arquivos", "*.*")]
         file_path = filedialog.asksaveasfilename(
             title="Exportar Relatório",
             initialdir=initial_dir,
             typevariable=type_var,
             filetypes=filetypes_list
         )
-        if file_path:
-            try:
-                # Se o usuário não digitou a extensão, pegamos a do menu selecionado
-                if not os.path.splitext(file_path)[1]:
-                    selected = type_var.get()
-                    for name, ext in filetypes_list:
-                        if name == selected and ext != "*.*":
-                            file_path += ext.replace("*", "")
-                            break
-                    else:
-                        file_path += ".md"  # Fallback caso nada seja escolhido
+        if not file_path:
+            return
 
-                self.settings["last_report_dir"] = os.path.dirname(file_path)
-                self.save_settings()
-                
-                report_content = self.report_text.text.get("1.0", END).strip()
-                if not report_content:
-                    self.log("Aviso: O relatório está vazio.", "warning")
-                    return
-                    
-                ext = os.path.splitext(file_path)[1].lower()
-                
-                if ext in ['.md', '.txt', '']:
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(report_content)
-                    self.log(f"Relatório salvo com sucesso em: {file_path}")
-                elif ext == '.pdf':
-                    self.log("Gerando PDF nativo a partir do Markdown... Aguarde.", "info")
-                    self.update()
-                    import markdown
-                    from xhtml2pdf import pisa
-                    
-                    # Interpreta o Markdown para HTML e aplica CSS para ficar organizado
-                    html_content = markdown.markdown(report_content, extensions=['tables', 'fenced_code'])
-                    styled_html = f"""
-                    <html><head>
-                    <meta charset="UTF-8">
-                    <style>
-                        body {{ font-family: Helvetica, Arial, sans-serif; font-size: 12px; line-height: 1.5; }}
-                        h1, h2, h3 {{ color: #2c3e50; }}
-                        table {{ border-collapse: collapse; width: 100%; margin-bottom: 15px; }}
-                        th, td {{ border: 1px solid #ddd; padding: 6px; text-align: left; }}
-                        th {{ background-color: #f8f9fa; }}
-                        code {{ background-color: #f4f4f4; padding: 2px 4px; border-radius: 4px; font-family: monospace; }}
-                        pre {{ background-color: #f8f9fa; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }}
-                    </style></head><body>{html_content}</body></html>
-                    """
-                    with open(file_path, "wb") as pdf_file:
-                        pisa_status = pisa.CreatePDF(styled_html.encode('utf-8'), dest=pdf_file, encoding='utf-8')
-                    if pisa_status.err:
-                        self.log("Erro ao gerar o arquivo PDF.", "danger")
-                    else:
-                        self.log(f"Relatório exportado com sucesso em: {file_path}")
+        temp_dir_to_clean = None
+        try:
+            if not os.path.splitext(file_path)[1]:
+                selected = type_var.get()
+                for name, ext_pattern in filetypes_list:
+                    if name == selected and ext_pattern != "*.*":
+                        file_path += ext_pattern.replace("*", "")
+                        break
                 else:
-                    self.log(f"Convertendo relatório para {ext}... Aguarde (pode demorar na 1ª vez).", "info")
-                    self.update() # Força a interface a desenhar o log
-                    
-                    import pypandoc
+                    file_path += ".md"
+
+            self.settings["last_report_dir"] = os.path.dirname(file_path)
+            self.save_settings()
+            
+            report_content = self.report_text.text.get("1.0", END).strip()
+            if not report_content:
+                self.log("Aviso: O relatório está vazio.", "warning")
+                return
+                
+            # Limpa bloco de código caso a IA tenha encapsulado toda a resposta
+            clean_content = report_content
+            if clean_content.startswith("```markdown"):
+                clean_content = clean_content[11:]
+            elif clean_content.startswith("```md"):
+                clean_content = clean_content[5:]
+            elif clean_content.startswith("```"):
+                clean_content = clean_content[3:]
+                
+            if clean_content.endswith("```"):
+                clean_content = clean_content[:-3]
+                
+            report_content = clean_content.strip()
+            
+            ext = os.path.splitext(file_path)[1].lower()
+            
+            processed_content = report_content
+            if ext in ['.pdf', '.docx', '.odt']:
+                processed_content, temp_dir_to_clean = self._render_mermaid_charts(report_content)
+            
+            if ext in ['.md', '.txt', '']:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(report_content)
+                self.log(f"Relatório salvo com sucesso em: {file_path}")
+            else:
+                self.log(f"Convertendo relatório para {ext}... Aguarde (pode demorar).", "info")
+                self.update()
+                
+                import pypandoc
+                try:
+                    pypandoc.get_pandoc_version()
+                except OSError:
+                    self.log("Pandoc não encontrado. Baixando e instalando...", "warning")
+                    self.update()
+                    pypandoc.download_pandoc()
+                
+                to_format = 'pdf' if ext == '.pdf' else ext.replace('.', '')
+                extra_args = []
+                
+                if to_format == 'docx':
+                    reference_doc_path = 'templates/report_template.docx'
+                    if os.path.exists(reference_doc_path):
+                        extra_args.extend(['--reference-doc', reference_doc_path])
+                        self.log(f"Usando template Word: {reference_doc_path}", "info")
+                
+                if to_format == 'pdf':
+                    # Exportação de PDF usando Playwright + HTML (Elimina necessidade de LaTeX)
                     try:
-                        pypandoc.get_pandoc_version()
-                    except OSError:
-                        self.log("Pandoc não encontrado. Baixando e instalando nos bastidores...", "warning")
-                        self.update()
-                        pypandoc.download_pandoc()
-                    
-                    to_format = ext.replace('.', '')
+                        html_body = pypandoc.convert_text(processed_content, 'html', format='gfm+hard_line_breaks')
+                        
+                        author_name = self.analyst_name_var.get().strip()
+                        company_name = self.analyst_company_var.get().strip()
+                        author_field = author_name if author_name else "Analista de Monitoramento"
+                        if company_name:
+                            author_field += f" - {company_name}"
+                        current_date = datetime.now().strftime("%d/%m/%Y")
+                        
+                        full_html = f"""
+                        <!DOCTYPE html><html><head><meta charset="UTF-8">
+                        <style>
+                            body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; }}
+                            h1, h2, h3 {{ color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 30px; }}
+                            a {{ color: #3498db; text-decoration: none; }}
+                            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; page-break-inside: avoid; }}
+                            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                            th {{ background-color: #f8f9fa; font-weight: bold; }}
+                            .cover-page {{ text-align: center; margin-top: 30%; page-break-after: always; }}
+                            .cover-title {{ font-size: 2.8em; font-weight: bold; margin-bottom: 20px; color: #2c3e50; }}
+                            .cover-author {{ font-size: 1.5em; margin-bottom: 10px; color: #7f8c8d; }}
+                            .cover-date {{ font-size: 1.2em; color: #95a5a6; }}
+                            img {{ max-width: 100%; height: auto; display: block; margin: 15px auto; page-break-inside: avoid; }}
+                            pre {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto; page-break-inside: avoid; border: 1px solid #eee; }}
+                            code {{ font-family: Consolas, monospace; background-color: #f8f9fa; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }}
+                            blockquote {{ border-left: 4px solid #3498db; padding-left: 15px; color: #555; font-style: italic; }}
+                        </style>
+                        </head><body>
+                            <div class="cover-page">
+                                <div class="cover-title">Relatório Técnico de Auditoria Zabbix</div>
+                                <div class="cover-author">{author_field}</div>
+                                <div class="cover-date">{current_date}</div>
+                            </div>
+                            {html_body}
+                        </body></html>
+                        """
+                        
+                        temp_html_path = os.path.join(tempfile.gettempdir(), "zabbix_report_temp.html")
+                        with open(temp_html_path, "w", encoding="utf-8") as f:
+                            f.write(full_html)
+                        
+                        from playwright.sync_api import sync_playwright
+                        with sync_playwright() as p:
+                            browser = p.chromium.launch()
+                            page = browser.new_page()
+                            page.goto(pathlib.Path(temp_html_path).absolute().as_uri())
+                            page.wait_for_load_state('networkidle')
+                            page.pdf(
+                                path=file_path, 
+                                format="A4", 
+                                margin={"top": "2.5cm", "bottom": "2.5cm", "left": "2cm", "right": "2cm"}, 
+                                print_background=True, 
+                                display_header_footer=True, 
+                                footer_template='<div style="font-size: 10px; text-align: center; width: 100%; color: #7f8c8d;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>', 
+                                header_template='<div></div>'
+                            )
+                            browser.close()
+                            
+                        os.remove(temp_html_path)
+                        self.log(f"Relatório exportado com sucesso em: {file_path}")
+                    except Exception as e:
+                        self.log(f"Erro ao exportar PDF: {e}", "danger")
+                else:
                     try:
-                        # O Pandoc exige que a instrução de formato seja 'markdown' e não 'md'
-                        pypandoc.convert_text(report_content, to_format, format='markdown', outputfile=file_path)
+                        pypandoc.convert_text(processed_content, to_format, format='gfm+hard_line_breaks', outputfile=file_path, extra_args=extra_args)
                         self.log(f"Relatório exportado com sucesso em: {file_path}")
                     except Exception as e:
                         self.log(f"Erro ao converter com Pandoc: {e}", "danger")
-            except ImportError:
-                self.log("ERRO: Biblioteca ausente. Execute: pip install pypandoc markdown xhtml2pdf", "danger")
-            except Exception as e:
-                self.log(f"Erro ao exportar relatório: {e}", "danger")
+
+        except Exception as e:
+            self.log(f"Erro ao exportar relatório: {e}", "danger")
+        finally:
+            if temp_dir_to_clean:
+                self.log("Limpando arquivos temporários dos gráficos...", "info")
+                shutil.rmtree(temp_dir_to_clean, ignore_errors=True)
 
     def start_audit_clicked(self):
         self.save_settings()
@@ -456,3 +656,135 @@ class ManageAccountsWindow(ttk.Toplevel):
             next_acc = list(self.parent.ai_accounts.keys())[0] if self.parent.ai_accounts else ""
             self.parent.refresh_accounts(next_acc)
             self.destroy()
+
+class StyleSettingsWindow(ttk.Toplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.title("Estilos de Gráfico")
+        self.geometry("550x580")
+        self.grab_set()
+
+        self.font_var = ttk.StringVar(value=self.parent.chart_font_var.get())
+        self.type_var = ttk.StringVar(value=self.parent.chart_type_var.get())
+        self.color_var = ttk.StringVar(value=self.parent.chart_color_var.get())
+
+        self.preview_image = None
+        self.temp_preview_dir = None
+
+        self.create_widgets()
+        self.update_preview()
+
+    def create_widgets(self):
+        main_frame = ttk.Frame(self, padding=15)
+        main_frame.pack(fill=BOTH, expand=True)
+
+        row2 = ttk.Frame(main_frame)
+        row2.pack(fill=X, pady=5)
+        ttk.Label(row2, text="Fonte Principal:", width=18).pack(side=LEFT)
+        font_combo = ttk.Combobox(row2, textvariable=self.font_var, values=[
+            "Arial, Helvetica, sans-serif", 
+            "'Times New Roman', Times, serif", 
+            "'Courier New', Courier, monospace", 
+            "Verdana, Geneva, sans-serif",
+            "Tahoma, Geneva, sans-serif"
+        ], state="readonly")
+        font_combo.pack(side=LEFT, fill=X, expand=True)
+        font_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
+
+        row3 = ttk.Frame(main_frame)
+        row3.pack(fill=X, pady=5)
+        ttk.Label(row3, text="Tipo do Gráfico:", width=18).pack(side=LEFT)
+        type_combo = ttk.Combobox(row3, textvariable=self.type_var, values=["Linha", "Barra"], state="readonly")
+        type_combo.pack(side=LEFT, fill=X, expand=True)
+        type_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
+
+        row4 = ttk.Frame(main_frame)
+        row4.pack(fill=X, pady=5)
+        ttk.Label(row4, text="Cor Principal:", width=18).pack(side=LEFT)
+        color_combo = ttk.Combobox(row4, textvariable=self.color_var, values=["Padrão", "Azul", "Vermelho", "Verde", "Laranja", "Roxo"], state="readonly")
+        color_combo.pack(side=LEFT, fill=X, expand=True)
+        color_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
+
+        # Frame para a prévia
+        preview_frame = ttk.LabelFrame(main_frame, text="Prévia do Gráfico")
+        preview_frame.pack(fill=BOTH, expand=True, pady=15, ipadx=10, ipady=10)
+        
+        self.preview_label = ttk.Label(preview_frame, text="Gerando prévia... Aguarde.", justify="center")
+        self.preview_label.pack(expand=True)
+
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(fill=X, pady=5)
+        ttk.Button(btn_frame, text="Salvar", bootstyle="success", command=self.save_styles).pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancelar", bootstyle="secondary", command=self.destroy).pack(side=RIGHT, padx=5)
+
+    def update_preview(self):
+        self.preview_label.configure(text="Gerando prévia com Playwright... Aguarde.", image='')
+        font = self.font_var.get()
+        chart_type = self.type_var.get()
+        chart_color = self.color_var.get()
+        
+        thread = threading.Thread(target=self._render_preview_thread, args=(font, chart_type, chart_color))
+        thread.daemon = True
+        thread.start()
+
+    def _render_preview_thread(self, font, chart_type, chart_color):
+        template_path = os.path.join("templates", "mermaid_template.html")
+        try:
+            with open(template_path, "r", encoding="utf-8") as f:
+                base_html = f.read()
+        except FileNotFoundError:
+            self.after(0, lambda: self.preview_label.configure(text=f"Erro: '{template_path}' não encontrado.", image=''))
+            return
+
+        try:
+            from playwright.sync_api import sync_playwright
+            
+            ctype_en = "bar" if chart_type == "Barra" else "line"
+            code = f"xychart-beta\n  title \"Exemplo de Desempenho\"\n  x-axis [\"1h\", \"45m\", \"30m\", \"15m\", \"Agora\"]\n  y-axis \"Uso de Cache (%)\" 0 --> 100\n  {ctype_en} [20, 35, 30, 60, 45]"
+            
+            color_map = {"Padrão": "", "Azul": "#3498db", "Vermelho": "#e74c3c", "Verde": "#2ecc71", "Laranja": "#e67e22", "Roxo": "#9b59b6"}
+            hex_color = color_map.get(chart_color, "")
+            theme_vars = f",\n                            themeVariables: {{ xyChart: {{ plotColorPalette: '{hex_color}' }} }}" if hex_color else ""
+            
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page()
+                
+                html_content = base_html.replace("__EXTRA_STYLE__", "display: inline-block;").replace(
+                    "__CODE__", html.escape(code)).replace(
+                    "__FONT__", font).replace(
+                    "__THEME_VARS__", theme_vars)
+                
+                if not self.temp_preview_dir:
+                    self.temp_preview_dir = tempfile.mkdtemp(prefix="zabbix_preview_")
+                output_path = os.path.join(self.temp_preview_dir, "preview.png")
+                
+                page.set_content(html_content)
+                page.wait_for_selector('#mermaid-container > svg', timeout=15000)
+                chart_element = page.locator('body')
+                chart_element.screenshot(path=output_path)
+                browser.close()
+                
+                self.after(0, self._apply_preview_image, output_path)
+        except Exception as e:
+            self.after(0, lambda err=e: self.preview_label.configure(text=f"Erro na prévia:\n{err}", image=''))
+
+    def _apply_preview_image(self, path):
+        try:
+            self.preview_image = tk.PhotoImage(file=path)
+            self.preview_label.configure(image=self.preview_image, text="")
+        except Exception as e:
+            self.preview_label.configure(text=f"Erro ao carregar imagem:\n{e}", image='')
+
+    def save_styles(self):
+        self.parent.chart_font_var.set(self.font_var.get())
+        self.parent.chart_type_var.set(self.type_var.get())
+        self.parent.chart_color_var.set(self.color_var.get())
+        self.parent.save_settings()
+        self.destroy()
+
+    def destroy(self):
+        if self.temp_preview_dir:
+            shutil.rmtree(self.temp_preview_dir, ignore_errors=True)
+        super().destroy()

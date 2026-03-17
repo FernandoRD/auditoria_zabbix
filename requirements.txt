@@ -4,6 +4,5 @@ openai
 anthropic
 ttkbootstrap
 python-dotenv
-pypandoc
-markdown
-xhtml2pdf
+pypandoc[tinytex]
+playwright
