@@ -1,6 +1,8 @@
 # Arquivos de ambiente
 .env
 settings.json
+last_audit_cache.json
+
 # Cache do Python
 __pycache__/
 
