@@ -22,7 +22,7 @@ class MainView(ttk.Window):
     def __init__(self):
         super().__init__(themename="darkly")
         self.title("Auditoria Inteligente de Zabbix")
-        self.geometry("1000x780")
+        self.geometry("1100x780")
         self.controller = None
 
         # Carrega defaults do .env (se existir)
