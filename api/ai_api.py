@@ -1,5 +1,6 @@
 import json
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 import openai
 import anthropic
@@ -18,8 +19,8 @@ class AIClient:
             
         try:
             if self.provider == "Google Gemini":
-                genai.configure(api_key=self.api_key)
-                return [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                client = genai.Client(api_key=self.api_key)
+                return [m.name for m in client.models.list() if m.name and "gemini" in m.name.lower()]
                 
             elif self.provider == "OpenAI":
                 client = openai.OpenAI(api_key=self.api_key)
@@ -72,9 +73,14 @@ class AIClient:
             raise FileNotFoundError("Arquivo de template de prompt 'prompts/report_template.txt' não encontrado.")
 
         if self.provider == "Google Gemini":
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(model_name, system_instruction="Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido.")
-            response = model.generate_content(prompt, stream=True)
+            client = genai.Client(api_key=self.api_key)
+            response = client.models.generate_content_stream(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction="Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido."
+                )
+            )
             for chunk in response:
                 yield chunk.text
             

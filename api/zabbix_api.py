@@ -114,7 +114,6 @@ class ZabbixClient:
             pass
         return None
 
-    def collect_data(self):
     def collect_data(self, history_limit=500, sample_limit=15, template_limit=50):
         audit_data = {}
         audit_data["zabbix_version"] = self.api_version
@@ -128,7 +127,6 @@ class ZabbixClient:
             audit_data["total_hosts"] = len(hosts)
             audit_data["monitored_hosts"] = len([h for h in hosts if h["status"] == "0"])
             audit_data["disabled_hosts"] = len([h for h in hosts if h["status"] == "1"])
-            audit_data["disabled_hosts_samples"] = [h["host"] for h in hosts if h["status"] == "1"][:15]
             audit_data["disabled_hosts_samples"] = [h["host"] for h in hosts if h["status"] == "1"][:sample_limit]
             
         # Grupos de Hosts
@@ -146,7 +144,6 @@ class ZabbixClient:
             audit_data["total_active_items"] = len(items)
             external_checks = [i for i in items if i["type"] == "10"]
             audit_data["external_checks_count"] = len(external_checks)
-            audit_data["external_checks_samples"] = [i["key_"] for i in external_checks[:10]]
             audit_data["external_checks_samples"] = [i["key_"] for i in external_checks[:sample_limit]]
             
             aggressive_items = []
@@ -156,12 +153,10 @@ class ZabbixClient:
                     aggressive_items.append({"name": i["name"], "delay": i["delay"], "key": i["key_"]})
             
             audit_data["aggressive_polling_count"] = len(aggressive_items)
-            audit_data["aggressive_polling_samples"] = aggressive_items[:10]
             audit_data["aggressive_polling_samples"] = aggressive_items[:sample_limit]
             
             unsupported_items = [i for i in items if i.get("state") == "1"]
             audit_data["unsupported_items_count"] = len(unsupported_items)
-            audit_data["unsupported_items_samples"] = [i["key_"] for i in unsupported_items[:10]]
             audit_data["unsupported_items_samples"] = [i["key_"] for i in unsupported_items[:sample_limit]]
 
         # 4. Templates Utilizados
@@ -169,7 +164,6 @@ class ZabbixClient:
         if templates:
             audit_data["total_templates"] = len(templates)
             template_names = [t["host"] for t in templates]
-            audit_data["templates_list_sample"] = template_names[:50] # Limita a lista global para não estourar o contexto da IA
             audit_data["templates_list_sample"] = template_names[:template_limit] # Limita a lista global para não estourar o contexto da IA
 
         # Templates específicos aplicados na Infra do Zabbix (Server)
@@ -205,7 +199,6 @@ class ZabbixClient:
                         "itemids": item["itemid"],
                         "sortfield": "clock",
                         "sortorder": "DESC",
-                        "limit": 500
                         "limit": history_limit
                     })
                     if history_data:
@@ -223,6 +216,56 @@ class ZabbixClient:
                         "recent_trend_values": trend_values
                     })
             audit_data["zabbix_server_health_metrics"] = server_health
+
+        # 5.5 Coleta Específica de Banco de Dados da Infra (Zabbix DB)
+        try:
+            infra_hostids = set()
+            if active_hostid:
+                infra_hostids.add(active_hostid)
+
+            zabbix_groups = self.api_call("hostgroup.get", {"output": ["groupid"], "search": {"name": "Zabbix"}})
+            if zabbix_groups:
+                z_hosts = self.api_call("host.get", {"output": ["hostid"], "groupids": [g["groupid"] for g in zabbix_groups]})
+                if z_hosts:
+                    for zh in z_hosts:
+                        infra_hostids.add(zh["hostid"])
+                        
+            z_named = self.api_call("host.get", {"output": ["hostid"], "search": {"host": "zabbix"}, "searchWildcardsEnabled": True})
+            if z_named:
+                for zh in z_named:
+                    infra_hostids.add(zh["hostid"])
+
+            if infra_hostids:
+                db_items = self.api_call("item.get", {
+                    "output": ["itemid", "name", "key_", "lastvalue", "units", "value_type"],
+                    "hostids": list(infra_hostids),
+                    "search": {"key_": ["mysql", "pgsql", "oracle"]},
+                    "searchByAny": True,
+                    "filter": {"status": "0", "state": "0"}
+                })
+                
+                db_metrics = []
+                if db_items:
+                    critical_db_terms = ["qps", "queries", "connections", "buffer", "cache", "size", "slow", "ping", "uptime", "active", "total", "read", "write"]
+                    filtered_db_items = [i for i in db_items if any(term in i["key_"].lower() or term in i["name"].lower() for term in critical_db_terms) and "zabbix[" not in i["key_"]]
+                    
+                    for item in filtered_db_items[:40]:
+                        history_data = []
+                        if item["value_type"] in ["0", "3"]:
+                            hist = self.api_call("history.get", {
+                                "output": ["value"],
+                                "history": item["value_type"],
+                                "itemids": item["itemid"],
+                                "sortfield": "clock",
+                                "sortorder": "DESC",
+                                "limit": 3
+                            })
+                            if hist:
+                                history_data = [h["value"] for h in hist]
+                        db_metrics.append({"name": item["name"], "key": item["key_"], "current_value": f"{item['lastvalue']} {item.get('units', '')}".strip(), "recent_trend": history_data})
+                audit_data["database_health_metrics"] = db_metrics
+        except Exception:
+            pass
 
         # 6. Coletas Extras de Higiene e Risco
         # NVPS (New Values Per Second)
@@ -243,7 +286,6 @@ class ZabbixClient:
         try:
             drules = self.api_call("drule.get", {"output": ["name", "delay", "iprange"], "filter": {"status": "0"}})
             audit_data["active_discovery_rules_count"] = len(drules) if drules else 0
-            audit_data["active_discovery_rules_samples"] = drules[:5] if drules else []
             audit_data["active_discovery_rules_samples"] = drules[:sample_limit] if drules else []
         except Exception: pass
 
@@ -252,7 +294,6 @@ class ZabbixClient:
             failed_alerts = self.api_call("alert.get", {"output": ["error"], "filter": {"status": "2"}, "limit": 100})
             audit_data["recent_failed_alerts_count"] = len(failed_alerts) if failed_alerts else 0
             if failed_alerts:
-                audit_data["failed_alerts_errors_samples"] = list(set([a.get("error", "") for a in failed_alerts if a.get("error")]))[:5]
                 audit_data["failed_alerts_errors_samples"] = list(set([a.get("error", "") for a in failed_alerts if a.get("error")]))[:sample_limit]
         except Exception: pass
 
@@ -260,7 +301,6 @@ class ZabbixClient:
         try:
             problems = self.api_call("problem.get", {"output": ["name", "severity"], "filter": {"acknowledged": "0"}, "severities": [4, 5], "source": 0, "object": 0, "limit": 20})
             audit_data["unacknowledged_critical_problems_count"] = len(problems) if problems else 0
-            audit_data["unacknowledged_critical_problems_samples"] = [p.get("name") for p in problems[:5]] if problems else []
             audit_data["unacknowledged_critical_problems_samples"] = [p.get("name") for p in problems[:sample_limit]] if problems else []
         except Exception: pass
 
@@ -283,7 +323,6 @@ class ZabbixClient:
                     if str(u.get("type")) == "3" or str(u.get("roleid")) == "3":
                         super_admins.append(u.get("username", u.get("alias", "Desconhecido")))
             audit_data["super_admin_users_count"] = len(super_admins)
-            audit_data["super_admin_users_samples"] = super_admins[:10]
             audit_data["super_admin_users_samples"] = super_admins[:sample_limit]
         except Exception: pass
 
@@ -293,7 +332,6 @@ class ZabbixClient:
             maintenances = self.api_call("maintenance.get", {"output": ["name", "active"]})
             active_maint = [m for m in maintenances if str(m.get("active", "")) == "1"] if maintenances else []
             audit_data["active_maintenances_count"] = len(active_maint)
-            audit_data["active_maintenances_samples"] = [m.get("name") for m in active_maint[:5]]
             audit_data["active_maintenances_samples"] = [m.get("name") for m in active_maint[:sample_limit]]
         except Exception: pass
 
@@ -301,7 +339,6 @@ class ZabbixClient:
         try:
             mediatypes = self.api_call("mediatype.get", {"output": ["name", "type"], "filter": {"status": "0"}})
             audit_data["active_mediatypes_count"] = len(mediatypes) if mediatypes else 0
-            audit_data["active_mediatypes_samples"] = [m.get("name") for m in mediatypes] if mediatypes else []
             audit_data["active_mediatypes_samples"] = [m.get("name") for m in mediatypes][:sample_limit] if mediatypes else []
         except Exception: pass
 
@@ -315,7 +352,6 @@ class ZabbixClient:
         try:
             scripts = self.api_call("script.get", {"output": ["name"]})
             audit_data["global_scripts_count"] = len(scripts) if scripts else 0
-            audit_data["global_scripts_samples"] = [s.get("name") for s in scripts[:5]] if scripts else []
             audit_data["global_scripts_samples"] = [s.get("name") for s in scripts[:sample_limit]] if scripts else []
         except Exception: pass
 

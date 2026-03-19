@@ -22,7 +22,7 @@ class MainView(ttk.Window):
     def __init__(self):
         super().__init__(themename="darkly")
         self.title("Auditoria Inteligente de Zabbix")
-        self.geometry("1100x780")
+        self.geometry("1100x710")
         self.controller = None
 
         # Carrega defaults do .env (se existir)
@@ -56,6 +56,9 @@ class MainView(ttk.Window):
 
         self.chart_type_var = ttk.StringVar(value=self.settings.get("chart_type", "Linha"))
         self.chart_color_var = ttk.StringVar(value=self.settings.get("chart_color", "Padrão"))
+
+        self.history_limit_var = ttk.IntVar(value=self.settings.get("history_limit", 500))
+        self.sample_limit_var = ttk.IntVar(value=self.settings.get("sample_limit", 15))
 
         self.custom_instructions_var = self.settings.get("custom_instructions", "")
 
@@ -98,6 +101,8 @@ class MainView(ttk.Window):
         self.settings["chart_font"] = self.chart_font_var.get()
         self.settings["chart_type"] = self.chart_type_var.get()
         self.settings["chart_color"] = self.chart_color_var.get()
+        self.settings["history_limit"] = self.history_limit_var.get()
+        self.settings["sample_limit"] = self.sample_limit_var.get()
         self.settings["custom_instructions"] = self.custom_instructions_text.text.get("1.0", END).strip()
         if "api_keys" in self.settings:
             del self.settings["api_keys"]
@@ -224,65 +229,90 @@ class MainView(ttk.Window):
         config_frame = ttk.Frame(self.notebook, padding=15)
         self.notebook.add(config_frame, text="⚙️ Configurações")
         
-        z_frame = ttk.LabelFrame(config_frame, text="Credenciais do Zabbix")
+        cols_frame = ttk.Frame(config_frame)
+        cols_frame.pack(fill=BOTH, expand=True)
+        
+        left_col = ttk.Frame(cols_frame)
+        left_col.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
+        
+        right_col = ttk.Frame(cols_frame)
+        right_col.pack(side=RIGHT, fill=BOTH, expand=True, padx=(10, 0))
+
+        # --- COLUNA ESQUERDA ---
+        z_frame = ttk.LabelFrame(left_col, text="Credenciais do Zabbix")
         z_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
+        z_frame.columnconfigure(1, weight=1)
+        
         ttk.Label(z_frame, text="URL da API:").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Entry(z_frame, textvariable=self.zabbix_url_var, width=55).grid(row=0, column=1, sticky="w", pady=5, padx=5)
-        ttk.Label(z_frame, text="(ex: http://meu-ip/zabbix/api_jsonrpc.php)").grid(row=0, column=2, sticky="w")
+        ttk.Entry(z_frame, textvariable=self.zabbix_url_var).grid(row=0, column=1, columnspan=2, sticky="ew", pady=5, padx=5)
+        ttk.Label(z_frame, text="(ex: http://meu-ip/zabbix/api_jsonrpc.php)", font=("Helvetica", 8)).grid(row=1, column=1, columnspan=2, sticky="w", padx=5, pady=(0, 5))
         
-        ttk.Label(z_frame, text="Usuário:").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(z_frame, textvariable=self.zabbix_user_var, width=30).grid(row=1, column=1, sticky="w", pady=5, padx=5)
+        ttk.Label(z_frame, text="Usuário:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Entry(z_frame, textvariable=self.zabbix_user_var).grid(row=2, column=1, sticky="ew", pady=5, padx=5)
         
-        ttk.Label(z_frame, text="Senha:").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Entry(z_frame, textvariable=self.zabbix_pass_var, width=30, show="*").grid(row=2, column=1, sticky="w", pady=5, padx=5)
+        ttk.Label(z_frame, text="Senha:").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Entry(z_frame, textvariable=self.zabbix_pass_var, show="*").grid(row=3, column=1, sticky="ew", pady=5, padx=5)
         
-        self.test_zabbix_button = ttk.Button(z_frame, text="🔌 Testar Conexão", command=self.test_zabbix_clicked, bootstyle="info-outline")
-        self.test_zabbix_button.grid(row=2, column=2, padx=5)
+        self.test_zabbix_button = ttk.Button(z_frame, text="🔌 Testar", command=self.test_zabbix_clicked, bootstyle="info-outline")
+        self.test_zabbix_button.grid(row=3, column=2, padx=5)
+
+        # --- Parâmetros de Coleta ---
+        collect_frame = ttk.LabelFrame(left_col, text="Parâmetros de Coleta (API)")
+        collect_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
         
-        ai_frame = ttk.LabelFrame(config_frame, text="Inteligência Artificial")
+        ttk.Label(collect_frame, text="Profundidade do Histórico (Trends):").grid(row=0, column=0, sticky="w", pady=5, padx=5)
+        ttk.Spinbox(collect_frame, from_=50, to=5000, increment=50, textvariable=self.history_limit_var, width=10).grid(row=0, column=1, sticky="w", pady=5, padx=5)
+        
+        ttk.Label(collect_frame, text="Limite de Amostras de Problemas:").grid(row=1, column=0, sticky="w", pady=5, padx=5)
+        ttk.Spinbox(collect_frame, from_=5, to=200, increment=5, textvariable=self.sample_limit_var, width=10).grid(row=1, column=1, sticky="w", pady=5, padx=5)
+        
+        # --- Dados do Analista ---
+        analyst_frame = ttk.LabelFrame(left_col, text="Dados do Analista / Empresa (Cabeçalho do Relatório)")
+        analyst_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
+        analyst_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(analyst_frame, text="Nome:").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Entry(analyst_frame, textvariable=self.analyst_name_var).grid(row=0, column=1, sticky="ew", pady=5, padx=5)
+        
+        ttk.Label(analyst_frame, text="Empresa:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Entry(analyst_frame, textvariable=self.analyst_company_var).grid(row=1, column=1, sticky="ew", pady=5, padx=5)
+        
+        ttk.Label(analyst_frame, text="E-mail:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Entry(analyst_frame, textvariable=self.analyst_email_var).grid(row=2, column=1, sticky="ew", pady=5, padx=5)
+        
+        ttk.Label(analyst_frame, text="Telefone:").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Entry(analyst_frame, textvariable=self.analyst_phone_var).grid(row=3, column=1, sticky="ew", pady=5, padx=5)
+        
+        # --- COLUNA DIREITA ---
+        ai_frame = ttk.LabelFrame(right_col, text="Inteligência Artificial")
         ai_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
-        ttk.Label(ai_frame, text="Conta/Provedor:").grid(row=0, column=0, sticky="w", pady=5)
-        self.provider_combo = ttk.Combobox(ai_frame, textvariable=self.ai_provider_var, values=list(self.ai_accounts.keys()), state="readonly", width=25)
-        self.provider_combo.grid(row=0, column=1, sticky="w", pady=5, padx=5)
+        ai_frame.columnconfigure(1, weight=1)
         
-        ttk.Button(ai_frame, text="⚙️ Gerenciar Contas", command=self.open_manage_accounts_window, bootstyle="secondary-outline").grid(row=0, column=2, padx=5)
+        ttk.Label(ai_frame, text="Conta/Provedor:").grid(row=0, column=0, sticky="w", pady=5)
+        self.provider_combo = ttk.Combobox(ai_frame, textvariable=self.ai_provider_var, values=list(self.ai_accounts.keys()), state="readonly")
+        self.provider_combo.grid(row=0, column=1, sticky="ew", pady=5, padx=5)
+        ttk.Button(ai_frame, text="⚙️ Gerenciar", command=self.open_manage_accounts_window, bootstyle="secondary-outline").grid(row=0, column=2, padx=5)
         
         ttk.Label(ai_frame, text="Key / URL:").grid(row=1, column=0, sticky="w", pady=5)
-        self.ai_key_entry = ttk.Entry(ai_frame, textvariable=self.ai_key_var, width=55, show="*")
-        self.ai_key_entry.grid(row=1, column=1, sticky="w", pady=5, padx=5)
-        
+        self.ai_key_entry = ttk.Entry(ai_frame, textvariable=self.ai_key_var, show="*")
+        self.ai_key_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=5, padx=5)
+
         # Atualiza a visibilidade do campo caso a IA salva por padrão seja o Ollama
         self.on_provider_change()
         
-        ttk.Button(ai_frame, text="🔄 Validar Conexão / Atualizar Modelos", command=self.validate_and_load_models, bootstyle="info-outline").grid(row=1, column=2, padx=5)
-
-        # --- Dados do Analista ---
-        analyst_frame = ttk.LabelFrame(config_frame, text="Dados do Analista / Empresa (Cabeçalho do Relatório)")
-        analyst_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
-        
-        ttk.Label(analyst_frame, text="Nome:").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Entry(analyst_frame, textvariable=self.analyst_name_var, width=30).grid(row=0, column=1, sticky="w", pady=5, padx=5)
-        
-        ttk.Label(analyst_frame, text="Empresa:").grid(row=0, column=2, sticky="w", pady=5, padx=(10, 0))
-        ttk.Entry(analyst_frame, textvariable=self.analyst_company_var, width=30).grid(row=0, column=3, sticky="w", pady=5, padx=5)
-        
-        ttk.Label(analyst_frame, text="E-mail:").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(analyst_frame, textvariable=self.analyst_email_var, width=30).grid(row=1, column=1, sticky="w", pady=5, padx=5)
-        
-        ttk.Label(analyst_frame, text="Telefone:").grid(row=1, column=2, sticky="w", pady=5, padx=(10, 0))
-        ttk.Entry(analyst_frame, textvariable=self.analyst_phone_var, width=30).grid(row=1, column=3, sticky="w", pady=5, padx=5)
-
-        # --- Instruções Customizadas ---
-        inst_frame = ttk.LabelFrame(config_frame, text="Instruções Customizadas para a IA")
-        inst_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
-        self.custom_instructions_text = ScrolledText(inst_frame, wrap=WORD, height=4, autohide=True)
-        self.custom_instructions_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
-        self.custom_instructions_text.text.insert(END, self.custom_instructions_var)
+        ttk.Button(ai_frame, text="🔄 Validar Conexão / Atualizar Modelos", command=self.validate_and_load_models, bootstyle="info-outline").grid(row=2, column=0, columnspan=3, pady=(10, 0))
 
         # --- Estilos de Gráfico e Exportação ---
-        export_frame = ttk.LabelFrame(config_frame, text="Aparência e Exportação")
+        export_frame = ttk.LabelFrame(right_col, text="Aparência e Exportação")
         export_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
         ttk.Button(export_frame, text="🎨 Configurar Estilos de Gráfico", command=self.open_style_settings_window, bootstyle="info-outline").pack(side=LEFT, padx=10, pady=5)
+
+        # --- Instruções Customizadas ---
+        inst_frame = ttk.LabelFrame(right_col, text="Instruções Customizadas para a IA")
+        inst_frame.pack(fill=BOTH, expand=True, pady=(0, 10), ipadx=10, ipady=10)
+        self.custom_instructions_text = ScrolledText(inst_frame, wrap=WORD, autohide=True)
+        self.custom_instructions_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
+        self.custom_instructions_text.text.insert(END, self.custom_instructions_var)
 
         # 2. Aba de Logs
         log_frame = ttk.Frame(self.notebook, padding=5)
@@ -661,292 +691,3 @@ class MainView(ttk.Window):
         if hasattr(self, 'regerar_button'): self.regerar_button.configure(state=state)
         if hasattr(self, 'test_zabbix_button'): self.test_zabbix_button.configure(state=state)
         if hasattr(self, 'cancel_button'): self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")
-
-class ManageAccountsWindow(ttk.Toplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("Gerenciar Contas de IA")
-        self.geometry("500x320")
-        self.grab_set()
-
-        self.account_list = list(self.parent.ai_accounts.keys())
-        self.selected_account = ttk.StringVar(value="<Nova Conta>")
-        
-        self.account_name_var = ttk.StringVar()
-        self.base_provider_var = ttk.StringVar(value="Google Gemini")
-        self.token_var = ttk.StringVar()
-
-        self.create_widgets()
-        self.on_account_select()
-
-    def create_widgets(self):
-        main_frame = ttk.Frame(self, padding=15)
-        main_frame.pack(fill=BOTH, expand=True)
-
-        row0 = ttk.Frame(main_frame)
-        row0.pack(fill=X, pady=5)
-        ttk.Label(row0, text="Selecionar Conta:", width=18).pack(side=LEFT)
-        self.combo_accounts = ttk.Combobox(row0, textvariable=self.selected_account, values=["<Nova Conta>"] + self.account_list, state="readonly")
-        self.combo_accounts.pack(side=LEFT, fill=X, expand=True)
-        self.selected_account.trace_add("write", self.on_account_select)
-
-        row1 = ttk.Frame(main_frame)
-        row1.pack(fill=X, pady=5)
-        ttk.Label(row1, text="Nome da Conta:", width=18).pack(side=LEFT)
-        ttk.Entry(row1, textvariable=self.account_name_var).pack(side=LEFT, fill=X, expand=True)
-
-        row2 = ttk.Frame(main_frame)
-        row2.pack(fill=X, pady=5)
-        ttk.Label(row2, text="Provedor Base:", width=18).pack(side=LEFT)
-        ttk.Combobox(row2, textvariable=self.base_provider_var, values=["Google Gemini", "OpenAI", "Anthropic", "Ollama"], state="readonly").pack(side=LEFT, fill=X, expand=True)
-
-        row3 = ttk.Frame(main_frame)
-        row3.pack(fill=X, pady=5)
-        ttk.Label(row3, text="Token/URL:", width=18).pack(side=LEFT)
-        ttk.Entry(row3, textvariable=self.token_var, show="*").pack(side=LEFT, fill=X, expand=True)
-
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=X, pady=20)
-        ttk.Button(btn_frame, text="Salvar", bootstyle="success", command=self.save_account).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="Remover", bootstyle="danger", command=self.remove_account).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="Cancelar", bootstyle="secondary", command=self.destroy).pack(side=RIGHT, padx=5)
-
-    def on_account_select(self, *args):
-        selected = self.selected_account.get()
-        if selected == "<Nova Conta>":
-            self.account_name_var.set("")
-            self.base_provider_var.set("Google Gemini")
-            self.token_var.set("")
-        elif selected in self.parent.ai_accounts:
-            self.account_name_var.set(selected)
-            self.base_provider_var.set(self.parent.ai_accounts[selected]["provider"])
-            self.token_var.set(self.parent.ai_accounts[selected]["api_key"])
-
-    def save_account(self):
-        old_name = self.selected_account.get()
-        new_name = self.account_name_var.get().strip()
-        base_prov = self.base_provider_var.get()
-        token = self.token_var.get().strip()
-
-        if not new_name:
-            return
-
-        if old_name != "<Nova Conta>" and old_name != new_name:
-            if old_name in self.parent.ai_accounts:
-                del self.parent.ai_accounts[old_name]
-
-        self.parent.ai_accounts[new_name] = {
-            "provider": base_prov,
-            "api_key": token
-        }
-
-        self.parent.save_settings()
-        self.parent.refresh_accounts(new_name)
-        self.destroy()
-
-    def remove_account(self):
-        selected = self.selected_account.get()
-        if selected != "<Nova Conta>" and selected in self.parent.ai_accounts:
-            del self.parent.ai_accounts[selected]
-            self.parent.save_settings()
-            
-            next_acc = list(self.parent.ai_accounts.keys())[0] if self.parent.ai_accounts else ""
-            self.parent.refresh_accounts(next_acc)
-            self.destroy()
-
-class StyleSettingsWindow(ttk.Toplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("Estilos de Gráfico")
-        self.geometry("550x580")
-        self.grab_set()
-
-        self.font_var = ttk.StringVar(value=self.parent.chart_font_var.get())
-        self.type_var = ttk.StringVar(value=self.parent.chart_type_var.get())
-        self.color_var = ttk.StringVar(value=self.parent.chart_color_var.get())
-
-        self.preview_image = None
-        self.temp_preview_dir = None
-
-        self.create_widgets()
-        self.update_preview()
-
-    def create_widgets(self):
-        main_frame = ttk.Frame(self, padding=15)
-        main_frame.pack(fill=BOTH, expand=True)
-
-        row2 = ttk.Frame(main_frame)
-        row2.pack(fill=X, pady=5)
-        ttk.Label(row2, text="Fonte Principal:", width=18).pack(side=LEFT)
-        font_combo = ttk.Combobox(row2, textvariable=self.font_var, values=[
-            "Arial, Helvetica, sans-serif", 
-            "'Times New Roman', Times, serif", 
-            "'Courier New', Courier, monospace", 
-            "Verdana, Geneva, sans-serif",
-            "Tahoma, Geneva, sans-serif"
-        ], state="readonly")
-        font_combo.pack(side=LEFT, fill=X, expand=True)
-        font_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
-
-        row3 = ttk.Frame(main_frame)
-        row3.pack(fill=X, pady=5)
-        ttk.Label(row3, text="Tipo do Gráfico:", width=18).pack(side=LEFT)
-        type_combo = ttk.Combobox(row3, textvariable=self.type_var, values=["Linha", "Barra"], state="readonly")
-        type_combo.pack(side=LEFT, fill=X, expand=True)
-        type_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
-
-        row4 = ttk.Frame(main_frame)
-        row4.pack(fill=X, pady=5)
-        ttk.Label(row4, text="Cor Principal:", width=18).pack(side=LEFT)
-        color_combo = ttk.Combobox(row4, textvariable=self.color_var, values=["Padrão", "Azul", "Vermelho", "Verde", "Laranja", "Roxo"], state="readonly")
-        color_combo.pack(side=LEFT, fill=X, expand=True)
-        color_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
-
-        # Frame para a prévia
-        preview_frame = ttk.LabelFrame(main_frame, text="Prévia do Gráfico")
-        preview_frame.pack(fill=BOTH, expand=True, pady=15, ipadx=10, ipady=10)
-        
-        self.preview_label = ttk.Label(preview_frame, text="Gerando prévia... Aguarde.", justify="center")
-        self.preview_label.pack(expand=True)
-
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=X, pady=5)
-        ttk.Button(btn_frame, text="Salvar", bootstyle="success", command=self.save_styles).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="Cancelar", bootstyle="secondary", command=self.destroy).pack(side=RIGHT, padx=5)
-
-    def update_preview(self):
-        self.preview_label.configure(text="Gerando prévia com Playwright... Aguarde.", image='')
-        font = self.font_var.get()
-        chart_type = self.type_var.get()
-        chart_color = self.color_var.get()
-        
-        thread = threading.Thread(target=self._render_preview_thread, args=(font, chart_type, chart_color))
-        thread.daemon = True
-        thread.start()
-
-    def _render_preview_thread(self, font, chart_type, chart_color):
-        template_path = os.path.join("templates", "mermaid_template.html")
-        try:
-            with open(template_path, "r", encoding="utf-8") as f:
-                base_html = f.read()
-        except FileNotFoundError:
-            self.after(0, lambda: self.preview_label.configure(text=f"Erro: '{template_path}' não encontrado.", image=''))
-            return
-
-        try:
-            from playwright.sync_api import sync_playwright
-            
-            ctype_en = "bar" if chart_type == "Barra" else "line"
-            code = f"xychart-beta\n  title \"Exemplo de Desempenho\"\n  x-axis [\"1h\", \"45m\", \"30m\", \"15m\", \"Agora\"]\n  y-axis \"Uso de Cache (%)\" 0 --> 100\n  {ctype_en} [20, 35, 30, 60, 45]"
-            
-            color_map = {"Padrão": "", "Azul": "#3498db", "Vermelho": "#e74c3c", "Verde": "#2ecc71", "Laranja": "#e67e22", "Roxo": "#9b59b6"}
-            hex_color = color_map.get(chart_color, "")
-            theme_vars = f",\n                            themeVariables: {{ xyChart: {{ plotColorPalette: '{hex_color}' }} }}" if hex_color else ""
-            
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                page = browser.new_page()
-                
-                html_content = base_html.replace("__EXTRA_STYLE__", "display: inline-block;").replace(
-                    "__CODE__", html.escape(code)).replace(
-                    "__FONT__", font).replace(
-                    "__THEME_VARS__", theme_vars)
-                
-                if not self.temp_preview_dir:
-                    self.temp_preview_dir = tempfile.mkdtemp(prefix="zabbix_preview_")
-                output_path = os.path.join(self.temp_preview_dir, "preview.png")
-                
-                page.set_content(html_content)
-                page.wait_for_selector('#mermaid-container > svg', timeout=15000)
-                chart_element = page.locator('body')
-                chart_element.screenshot(path=output_path)
-                browser.close()
-                
-                self.after(0, self._apply_preview_image, output_path)
-        except Exception as e:
-            self.after(0, lambda err=e: self.preview_label.configure(text=f"Erro na prévia:\n{err}", image=''))
-
-    def _apply_preview_image(self, path):
-        try:
-            self.preview_image = tk.PhotoImage(file=path)
-            self.preview_label.configure(image=self.preview_image, text="")
-        except Exception as e:
-            self.preview_label.configure(text=f"Erro ao carregar imagem:\n{e}", image='')
-
-    def save_styles(self):
-        self.parent.chart_font_var.set(self.font_var.get())
-        self.parent.chart_type_var.set(self.type_var.get())
-        self.parent.chart_color_var.set(self.color_var.get())
-        self.parent.save_settings()
-        self.destroy()
-
-    def destroy(self):
-        if self.temp_preview_dir:
-            shutil.rmtree(self.temp_preview_dir, ignore_errors=True)
-        super().destroy()
-
-class ManageAttachmentsWindow(ttk.Toplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
-        self.title("Gerenciar Anexos")
-        self.geometry("600x400")
-        self.grab_set()
-
-        self.create_widgets()
-
-    def create_widgets(self):
-        main_frame = ttk.Frame(self, padding=15)
-        main_frame.pack(fill=BOTH, expand=True)
-
-        ttk.Label(main_frame, text="Arquivos Selecionados:", font=("Helvetica", 10, "bold")).pack(anchor="w", pady=(0, 5))
-
-        list_frame = ttk.Frame(main_frame)
-        list_frame.pack(fill=BOTH, expand=True, pady=(0, 15))
-        
-        scrollbar = ttk.Scrollbar(list_frame)
-        scrollbar.pack(side=RIGHT, fill="y")
-        
-        self.listbox = tk.Listbox(list_frame, selectmode="extended", yscrollcommand=scrollbar.set)
-        self.listbox.pack(side=LEFT, fill=BOTH, expand=True)
-        scrollbar.config(command=self.listbox.yview)
-
-        for f in self.parent.attached_files:
-            self.listbox.insert(tk.END, f)
-
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=X)
-
-        ttk.Button(btn_frame, text="Adicionar Mais", bootstyle="success", command=self.add_files).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="Remover Selecionado", bootstyle="danger", command=self.remove_files).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="Limpar Tudo", bootstyle="warning", command=self.clear_all).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="Fechar", bootstyle="secondary", command=self.destroy).pack(side=RIGHT, padx=5)
-
-    def add_files(self):
-        files = filedialog.askopenfilenames(
-            title="Selecione os arquivos de configuração ou log",
-            filetypes=(("Text/Log/Conf", "*.txt *.log *.conf"), ("All files", "*.*"))
-        )
-        if files:
-            for f in files:
-                if f not in self.parent.attached_files:
-                    self.parent.attached_files.append(f)
-                    self.listbox.insert(tk.END, f)
-            self.parent.update_attachments_ui()
-
-    def remove_files(self):
-        selected_indices = list(self.listbox.curselection())
-        selected_indices.reverse()  # Remove do último para o primeiro para não alterar os índices
-        for i in selected_indices:
-            file_to_remove = self.listbox.get(i)
-            if file_to_remove in self.parent.attached_files:
-                self.parent.attached_files.remove(file_to_remove)
-            self.listbox.delete(i)
-        self.parent.update_attachments_ui()
-
-    def clear_all(self):
-        self.parent.attached_files.clear()
-        self.listbox.delete(0, tk.END)
-        self.parent.update_attachments_ui()

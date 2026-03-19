@@ -31,6 +31,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN pip install playwright && \
     playwright install --with-deps chromium
 
+# CACHE BUST START (Não fazer cache daqui em diante)
+ARG CACHEBUST=1 
 # Copiar o restante do código da aplicação
 COPY . .
 

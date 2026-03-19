@@ -16,5 +16,5 @@ sudo -E docker run -it --rm \
   -v "$PWD:/app/meus_relatorios" \
 #  -v "$PWD:/templates:/app/templates" \
 #  -v "$PWD:/prompts:/app/prompts" \
-#  -v "$PWD:/app" \
+  -v "$PWD:/app" \
   auditoria-zabbix
