@@ -202,7 +202,7 @@ class MainView(ttk.Window):
             control_frame,
             textvariable=self.model_var,
             state="readonly",
-            width=25
+            width=50
         )
         self.model_combo.pack(side=LEFT, padx=(0, 10))
         self.model_combo.set("Carregando modelos...")
