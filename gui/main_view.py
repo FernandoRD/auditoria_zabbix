@@ -44,8 +44,10 @@ class MainView(ttk.Window):
             default_account = list(self.ai_accounts.keys())[0] if self.ai_accounts else ""
 
         self.zabbix_url_var = ttk.StringVar(value=self.settings.get("zabbix_url", os.getenv("ZABBIX_URL", "")))
+        self.zabbix_auth_method_var = ttk.StringVar(value=self.settings.get("zabbix_auth_method", "user_pass"))
         self.zabbix_user_var = ttk.StringVar(value=self.settings.get("zabbix_user", os.getenv("ZABBIX_USER", "")))
         self.zabbix_pass_var = ttk.StringVar(value=self.settings.get("zabbix_pass", os.getenv("ZABBIX_PASS", "")))
+        self.zabbix_token_var = ttk.StringVar(value=self.settings.get("zabbix_token", os.getenv("ZABBIX_TOKEN", "")))
         self.ai_provider_var = ttk.StringVar(value=default_account)
         self.ai_key_var = ttk.StringVar(value=self.ai_accounts.get(default_account, {}).get("api_key", ""))
 
@@ -96,8 +98,10 @@ class MainView(ttk.Window):
 
     def save_settings(self):
         self.settings["zabbix_url"] = self.zabbix_url_var.get()
+        self.settings["zabbix_auth_method"] = self.zabbix_auth_method_var.get()
         self.settings["zabbix_user"] = self.zabbix_user_var.get()
         self.settings["zabbix_pass"] = self.zabbix_pass_var.get()
+        self.settings["zabbix_token"] = self.zabbix_token_var.get()
         self.settings["ai_account"] = self.ai_provider_var.get()
         self.settings["ai_accounts"] = self.ai_accounts
         
@@ -261,14 +265,34 @@ class MainView(ttk.Window):
         ttk.Entry(z_frame, textvariable=self.zabbix_url_var).grid(row=0, column=1, columnspan=2, sticky="ew", pady=5, padx=5)
         ttk.Label(z_frame, text="(ex: http://meu-ip/zabbix/api_jsonrpc.php)", font=("Helvetica", 8)).grid(row=1, column=1, columnspan=2, sticky="w", padx=5, pady=(0, 5))
         
-        ttk.Label(z_frame, text="Usuário:").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Entry(z_frame, textvariable=self.zabbix_user_var).grid(row=2, column=1, sticky="ew", pady=5, padx=5)
+        self.auth_switch = ttk.Checkbutton(
+            z_frame, 
+            text="Autenticar via API Token", 
+            variable=self.zabbix_auth_method_var, 
+            onvalue="token", 
+            offvalue="user_pass", 
+            bootstyle="round-toggle",
+            command=self.toggle_zabbix_auth_fields
+        )
+        self.auth_switch.grid(row=2, column=0, columnspan=3, sticky="w", pady=5)
+
+        self.lbl_user = ttk.Label(z_frame, text="Usuário:")
+        self.lbl_user.grid(row=3, column=0, sticky="w", pady=5)
+        self.ent_user = ttk.Entry(z_frame, textvariable=self.zabbix_user_var)
+        self.ent_user.grid(row=3, column=1, sticky="ew", pady=5, padx=5)
         
-        ttk.Label(z_frame, text="Senha:").grid(row=3, column=0, sticky="w", pady=5)
-        ttk.Entry(z_frame, textvariable=self.zabbix_pass_var, show="*").grid(row=3, column=1, sticky="ew", pady=5, padx=5)
-        
+        self.lbl_pass = ttk.Label(z_frame, text="Senha:")
+        self.lbl_pass.grid(row=4, column=0, sticky="w", pady=5)
+        self.ent_pass = ttk.Entry(z_frame, textvariable=self.zabbix_pass_var, show="*")
+        self.ent_pass.grid(row=4, column=1, sticky="ew", pady=5, padx=5)
+
+        self.lbl_token = ttk.Label(z_frame, text="Token:")
+        self.ent_token = ttk.Entry(z_frame, textvariable=self.zabbix_token_var, show="*")
+
         self.test_zabbix_button = ttk.Button(z_frame, text="🔌 Testar", command=self.test_zabbix_clicked, bootstyle="info-outline")
-        self.test_zabbix_button.grid(row=3, column=2, padx=5)
+        self.test_zabbix_button.grid(row=4, column=2, padx=5)
+        
+        self.toggle_zabbix_auth_fields()
 
         # --- Parâmetros de Coleta ---
         collect_frame = ttk.LabelFrame(left_col, text="Parâmetros de Coleta (API)")
@@ -352,6 +376,24 @@ class MainView(ttk.Window):
         report_btn_frame.pack(fill=X, pady=(5, 0))
         ttk.Button(report_btn_frame, text="💾 Salvar / Exportar Relatório", command=self.save_report_clicked, bootstyle="primary").pack(side=LEFT)
         self.notebook.add(report_frame, text="Relatório Final")
+
+    def toggle_zabbix_auth_fields(self):
+        if self.zabbix_auth_method_var.get() == "token":
+            self.lbl_user.grid_remove()
+            self.ent_user.grid_remove()
+            self.lbl_pass.grid_remove()
+            self.ent_pass.grid_remove()
+            
+            self.lbl_token.grid(row=4, column=0, sticky="w", pady=5)
+            self.ent_token.grid(row=4, column=1, sticky="ew", pady=5, padx=5)
+        else:
+            self.lbl_token.grid_remove()
+            self.ent_token.grid_remove()
+            
+            self.lbl_user.grid()
+            self.ent_user.grid()
+            self.lbl_pass.grid()
+            self.ent_pass.grid()
 
     def update_model_list(self, models, default_model=None):
         self.model_combo['values'] = models
@@ -490,7 +532,7 @@ class MainView(ttk.Window):
                     code = re.sub(r'^\s*(?:line|bar)\s*\[', f'  {ctype_en} [', code, flags=re.MULTILINE)
                     output_file_path = os.path.join(temp_dir, f"chart_{chart_index}.png")
 
-                    xychart_config = f",\n            xyChart: {{ width: {chart_width}, height: {chart_height} }}"
+                    xychart_config = f",\n            xyChart: {{ width: {chart_width}, height: {chart_height}, xAxis: {{ showLabel: false }} }}"
                     html_content = base_html.replace("__EXTRA_STYLE__", extra_style).replace(
                         "__CODE__", html.escape(code)).replace(
                         "__FONT__", chart_font).replace(

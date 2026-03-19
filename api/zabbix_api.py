@@ -2,10 +2,11 @@ import requests
 import json
 
 class ZabbixClient:
-    def __init__(self, url, user, password):
+    def __init__(self, url, user=None, password=None, token=None):
         self.url = url
         self.user = user
         self.password = password
+        self.token = token
         self.api_version = None
         self.use_header_auth = False
         self.auth_token = None
@@ -51,6 +52,13 @@ class ZabbixClient:
             return None
 
     def authenticate(self):
+        if self.token:
+            self.auth_token = self.token
+            self.use_header_auth = True
+            # Realiza uma chamada simples para validar se o token é autêntico
+            self.api_call("user.get", {"output": ["userid"], "limit": 1})
+            return self.auth_token
+
         self.auth_token = self.api_call("user.login", {
             "username": self.user,
             "password": self.password
@@ -58,7 +66,7 @@ class ZabbixClient:
         return self.auth_token
 
     def logout(self):
-        if self.auth_token:
+        if self.auth_token and not self.token:
             try:
                 self.api_call("user.logout", [])
             except Exception:

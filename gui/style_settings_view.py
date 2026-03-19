@@ -176,7 +176,7 @@ class StyleSettingsWindow(ttk.Toplevel):
                 browser = p.chromium.launch()
                 page = browser.new_page(viewport={'width': max(1200, chart_width + 200), 'height': max(800, chart_height + 200)}, device_scale_factor=1.3)
                 
-                xychart_config = f",\n            xyChart: {{ width: {chart_width}, height: {chart_height} }}"
+                xychart_config = f",\n            xyChart: {{ width: {chart_width}, height: {chart_height}, xAxis: {{ showLabel: false }} }}"
                 extra_style = f"#mermaid-container {{ width: {chart_width}px; height: {chart_height}px; background-color: {hex_bg} !important; padding: 20px; border-radius: 8px; }} #mermaid-container svg {{ width: 100% !important; height: 100% !important; }}"
                 html_content = base_html.replace("__EXTRA_STYLE__", extra_style).replace(
                     "__CODE__", html.escape(code)).replace(

@@ -43,11 +43,17 @@ class Controller:
 
     def _test_zabbix_flow(self):
         z_url = self.view.zabbix_url_var.get().strip()
+        auth_method = self.view.zabbix_auth_method_var.get()
         z_user = self.view.zabbix_user_var.get().strip()
         z_pass = self.view.zabbix_pass_var.get().strip()
+        z_token = self.view.zabbix_token_var.get().strip()
         try:
             self.view.log(f"Testando conexão com o Zabbix em {z_url}...")
-            zabbix = zabbix_api.ZabbixClient(z_url, z_user, z_pass)
+            if auth_method == "token":
+                zabbix = zabbix_api.ZabbixClient(z_url, token=z_token)
+            else:
+                zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass)
+                
             version = zabbix.discover_version()
             if not version:
                 raise Exception("Não foi possível detectar a versão via API.")
@@ -83,8 +89,10 @@ class Controller:
 
     def run_audit_flow(self, use_cache):
         z_url = self.view.zabbix_url_var.get().strip()
+        auth_method = self.view.zabbix_auth_method_var.get()
         z_user = self.view.zabbix_user_var.get().strip()
         z_pass = self.view.zabbix_pass_var.get().strip()
+        z_token = self.view.zabbix_token_var.get().strip()
         ai_prov = self.view.get_selected_base_provider()
         ai_key = self.view.ai_key_var.get().strip()
         ai_mod = self.view.get_selected_model()
@@ -93,16 +101,30 @@ class Controller:
         template_limit = self.view.template_limit_var.get()
         only_used_templates = self.view.only_used_templates_var.get()
         
-        if not all([z_url, z_user, z_pass, ai_key, ai_mod]):
+        if not all([z_url, ai_key, ai_mod]):
             self.view.log("ERRO: Preencha todas as configurações na aba 'Configurações' antes de iniciar.", "danger")
             self.view.set_ui_state('normal')
             return
             
+        if auth_method == "token" and not z_token:
+            self.view.log("ERRO: Informe o API Token do Zabbix.", "danger")
+            self.view.set_ui_state('normal')
+            return
+            
+        if auth_method == "user_pass" and not all([z_user, z_pass]):
+            self.view.log("ERRO: Informe Usuário e Senha do Zabbix.", "danger")
+            self.view.set_ui_state('normal')
+            return
+
         try:
             zabbix_data = {}
             if not use_cache:
                 self.view.update_progress(10, "Conectando ao Zabbix...")
-                zabbix = zabbix_api.ZabbixClient(z_url, z_user, z_pass)
+                if auth_method == "token":
+                    zabbix = zabbix_api.ZabbixClient(z_url, token=z_token)
+                else:
+                    zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass)
+                    
                 self.view.log(f"Conectando ao Zabbix em {z_url}...")
                 version = zabbix.discover_version()
                 if version:
