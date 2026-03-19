@@ -65,6 +65,8 @@ class MainView(ttk.Window):
 
         self.history_limit_var = ttk.IntVar(value=self.settings.get("history_limit", 500))
         self.sample_limit_var = ttk.IntVar(value=self.settings.get("sample_limit", 15))
+        self.template_limit_var = ttk.IntVar(value=self.settings.get("template_limit", 200))
+        self.only_used_templates_var = ttk.BooleanVar(value=self.settings.get("only_used_templates", False))
 
         self.custom_instructions_var = self.settings.get("custom_instructions", "")
 
@@ -113,6 +115,8 @@ class MainView(ttk.Window):
         self.settings["chart_text_color"] = self.chart_text_color_var.get()
         self.settings["history_limit"] = self.history_limit_var.get()
         self.settings["sample_limit"] = self.sample_limit_var.get()
+        self.settings["template_limit"] = self.template_limit_var.get()
+        self.settings["only_used_templates"] = self.only_used_templates_var.get()
         self.settings["custom_instructions"] = self.custom_instructions_text.text.get("1.0", END).strip()
         if "api_keys" in self.settings:
             del self.settings["api_keys"]
@@ -275,6 +279,11 @@ class MainView(ttk.Window):
         
         ttk.Label(collect_frame, text="Limite de Amostras de Problemas:").grid(row=1, column=0, sticky="w", pady=5, padx=5)
         ttk.Spinbox(collect_frame, from_=5, to=200, increment=5, textvariable=self.sample_limit_var, width=10).grid(row=1, column=1, sticky="w", pady=5, padx=5)
+        
+        ttk.Label(collect_frame, text="Limite de Templates/Itens Globais:").grid(row=2, column=0, sticky="w", pady=5, padx=5)
+        ttk.Spinbox(collect_frame, from_=50, to=1000, increment=50, textvariable=self.template_limit_var, width=10).grid(row=2, column=1, sticky="w", pady=5, padx=5)
+        
+        ttk.Checkbutton(collect_frame, text="Coletar apenas templates em uso (vinculados a hosts)", variable=self.only_used_templates_var, bootstyle="round-toggle").grid(row=3, column=0, columnspan=2, sticky="w", pady=5, padx=5)
         
         # --- Dados do Analista ---
         analyst_frame = ttk.LabelFrame(left_col, text="Dados do Analista / Empresa (Cabeçalho do Relatório)")

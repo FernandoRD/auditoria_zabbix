@@ -114,7 +114,12 @@ class ZabbixClient:
             pass
         return None
 
-    def collect_data(self, history_limit=500, sample_limit=15, template_limit=50):
+    def collect_data(self, history_limit=500, sample_limit=15, template_limit=200, only_used_templates=False):
+        # Trava de segurança: impede divisões por zero e quebras caso o usuário digite 0 ou valor negativo
+        history_limit = max(1, int(history_limit))
+        sample_limit = max(1, int(sample_limit))
+        template_limit = max(1, int(template_limit))
+
         audit_data = {}
         audit_data["zabbix_version"] = self.api_version
 
@@ -160,28 +165,51 @@ class ZabbixClient:
             audit_data["unsupported_items_samples"] = [i["key_"] for i in unsupported_items[:sample_limit]]
 
         # 4. Templates Utilizados
-        templates = self.api_call("template.get", {"output": ["host"]})
+        template_params = {"output": ["host"]}
+        if only_used_templates:
+            template_params["selectHosts"] = ["hostid"]
+            
+        templates = self.api_call("template.get", template_params)
         if templates:
+            if only_used_templates:
+                templates = [t for t in templates if len(t.get("hosts", [])) > 0]
             audit_data["total_templates"] = len(templates)
             template_names = [t["host"] for t in templates]
             audit_data["templates_list_sample"] = template_names[:template_limit] # Limita a lista global para não estourar o contexto da IA
 
-        # Templates específicos aplicados na Infra do Zabbix (Server)
+        # Templates aplicados na Infraestrutura do Zabbix (Server e Banco)
         active_hostid = self.get_active_node_hostid()
-        audit_data["zabbix_server_templates"] = []
+        infra_hostids_for_templates = set()
         if active_hostid:
+            infra_hostids_for_templates.add(active_hostid)
+            
+        try:
+            infra_groups = self.api_call("hostgroup.get", {
+                "output": ["groupid"],
+                "search": {"name": ["Zabbix", "Database", "DB", "Banco"]},
+                "searchByAny": True
+            })
+            if infra_groups:
+                gids = [g["groupid"] for g in infra_groups]
+                infra_hosts = self.api_call("host.get", {"output": ["hostid"], "groupids": gids})
+                for ih in infra_hosts:
+                    infra_hostids_for_templates.add(ih["hostid"])
+        except Exception: pass
+
+        audit_data["zabbix_server_templates"] = []
+        if infra_hostids_for_templates:
             server_templates = self.api_call("template.get", {
-                "output": ["host"], "hostids": active_hostid
+                "output": ["host"], "hostids": list(infra_hostids_for_templates)
             })
             if server_templates:
-                audit_data["zabbix_server_templates"] = [t["host"] for t in server_templates]
+                audit_data["zabbix_server_templates"] = list(set([t["host"] for t in server_templates]))
 
         # 5. Coleta de Histórico: Saúde Interna
         item_params = {
             "output": ["itemid", "name", "key_", "value_type"],
             "filter": {"type": "5", "status": "0"},
             "search": {"key_": "zabbix["},
-            "limit": 200
+            "limit": template_limit
         }
         
         if active_hostid:
@@ -202,10 +230,10 @@ class ZabbixClient:
                         "limit": history_limit
                     })
                     if history_data:
-                        # Faz amostragem (pega ~15 pontos distribuídos num pool de 500)
+                        # Faz amostragem
                         # Isso abrange horas/dias de histórico ao invés de apenas minutos recentes
-                        step = max(1, len(history_data) // 15)
-                        trend_values = [h["value"] for h in history_data[0::step]][:15]
+                        step = max(1, len(history_data) // sample_limit)
+                        trend_values = [h["value"] for h in history_data[0::step]][:sample_limit]
                         trend_values.reverse()
                     else:
                         trend_values = ["Sem dados"]
@@ -223,14 +251,23 @@ class ZabbixClient:
             if active_hostid:
                 infra_hostids.add(active_hostid)
 
-            zabbix_groups = self.api_call("hostgroup.get", {"output": ["groupid"], "search": {"name": "Zabbix"}})
+            zabbix_groups = self.api_call("hostgroup.get", {
+                "output": ["groupid"], 
+                "search": {"name": ["Zabbix", "Database", "DB", "Banco"]}, 
+                "searchByAny": True
+            })
             if zabbix_groups:
                 z_hosts = self.api_call("host.get", {"output": ["hostid"], "groupids": [g["groupid"] for g in zabbix_groups]})
                 if z_hosts:
                     for zh in z_hosts:
                         infra_hostids.add(zh["hostid"])
                         
-            z_named = self.api_call("host.get", {"output": ["hostid"], "search": {"host": "zabbix"}, "searchWildcardsEnabled": True})
+            z_named = self.api_call("host.get", {
+                "output": ["hostid"], 
+                "search": {"host": ["zabbix", "database", "db", "mysql", "pgsql"]}, 
+                "searchWildcardsEnabled": True,
+                "searchByAny": True
+            })
             if z_named:
                 for zh in z_named:
                     infra_hostids.add(zh["hostid"])
@@ -249,7 +286,7 @@ class ZabbixClient:
                     critical_db_terms = ["qps", "queries", "connections", "buffer", "cache", "size", "slow", "ping", "uptime", "active", "total", "read", "write"]
                     filtered_db_items = [i for i in db_items if any(term in i["key_"].lower() or term in i["name"].lower() for term in critical_db_terms) and "zabbix[" not in i["key_"]]
                     
-                    for item in filtered_db_items[:40]:
+                    for item in filtered_db_items[:template_limit]:
                         history_data = []
                         if item["value_type"] in ["0", "3"]:
                             hist = self.api_call("history.get", {
@@ -258,7 +295,7 @@ class ZabbixClient:
                                 "itemids": item["itemid"],
                                 "sortfield": "clock",
                                 "sortorder": "DESC",
-                                "limit": 3
+                                "limit": sample_limit
                             })
                             if hist:
                                 history_data = [h["value"] for h in hist]
@@ -291,7 +328,7 @@ class ZabbixClient:
 
         # Alertas Falhos (Emails que não estão saindo)
         try:
-            failed_alerts = self.api_call("alert.get", {"output": ["error"], "filter": {"status": "2"}, "limit": 100})
+            failed_alerts = self.api_call("alert.get", {"output": ["error"], "filter": {"status": "2"}, "limit": history_limit})
             audit_data["recent_failed_alerts_count"] = len(failed_alerts) if failed_alerts else 0
             if failed_alerts:
                 audit_data["failed_alerts_errors_samples"] = list(set([a.get("error", "") for a in failed_alerts if a.get("error")]))[:sample_limit]
@@ -299,7 +336,7 @@ class ZabbixClient:
 
         # Problemas Críticos Não Reconhecidos
         try:
-            problems = self.api_call("problem.get", {"output": ["name", "severity"], "filter": {"acknowledged": "0"}, "severities": [4, 5], "source": 0, "object": 0, "limit": 20})
+            problems = self.api_call("problem.get", {"output": ["name", "severity"], "filter": {"acknowledged": "0"}, "severities": [4, 5], "source": 0, "object": 0, "limit": history_limit})
             audit_data["unacknowledged_critical_problems_count"] = len(problems) if problems else 0
             audit_data["unacknowledged_critical_problems_samples"] = [p.get("name") for p in problems[:sample_limit]] if problems else []
         except Exception: pass
@@ -315,70 +352,28 @@ class ZabbixClient:
 
         # Governança e Segurança: Usuários Super Admin
         try:
-            users = self.api_call("user.get", {"output": ["username", "type", "roleid"]})
-            super_admins = []
-            if users:
-                for u in users:
-                    # Suporte a versões <= 5.0 (type 3) e >= 5.2 (roleid 3 para SA default)
-                    if str(u.get("type")) == "3" or str(u.get("roleid")) == "3":
-                        super_admins.append(u.get("username", u.get("alias", "Desconhecido")))
-            audit_data["super_admin_users_count"] = len(super_admins)
-            audit_data["super_admin_users_samples"] = super_admins[:sample_limit]
-        except Exception: pass
-
-        # 7. Operação, ITSM e Automação
-        # Manutenções Ativas (Pontos Cegos)
-        try:
-            maintenances = self.api_call("maintenance.get", {"output": ["name", "active"]})
-            active_maint = [m for m in maintenances if str(m.get("active", "")) == "1"] if maintenances else []
-            audit_data["active_maintenances_count"] = len(active_maint)
-            audit_data["active_maintenances_samples"] = [m.get("name") for m in active_maint[:sample_limit]]
-        except Exception: pass
-
-        # Integrações / Canais de Notificação
-        try:
-            mediatypes = self.api_call("mediatype.get", {"output": ["name", "type"], "filter": {"status": "0"}})
-            audit_data["active_mediatypes_count"] = len(mediatypes) if mediatypes else 0
-            audit_data["active_mediatypes_samples"] = [m.get("name") for m in mediatypes][:sample_limit] if mediatypes else []
-        except Exception: pass
-
-        # Serviços de Negócio (SLA/ITSM)
-        try:
-            services = self.api_call("service.get", {"output": ["name"]})
-            audit_data["business_services_count"] = len(services) if services else 0
-        except Exception: pass
-
-        # Scripts Globais de Frontend
-        try:
-            scripts = self.api_call("script.get", {"output": ["name"]})
-            audit_data["global_scripts_count"] = len(scripts) if scripts else 0
-            audit_data["global_scripts_samples"] = [s.get("name") for s in scripts[:sample_limit]] if scripts else []
-        except Exception: pass
-
-        # 8. Análise de Proxies
-        proxies_details = []
-        try:
-            proxies = self.api_call("proxy.get", {
-                "output": ["name", "operating_mode", "version", "lastaccess"],
-                "selectHosts": ["hostid"],
-                "selectProxyGroup": ["name"]
+            users = self.api_call("user.get", {
+                "output": ["username", "alias", "name"], 
+                "filter": {"type": 3}
             })
+            if users:
+                audit_data["super_admin_users_count"] = len(users)
+                audit_data["super_admin_users_samples"] = [u.get("username", u.get("alias", "")) for u in users][:sample_limit]
+        except Exception: pass
+
+        # Scripts Globais
+        try:
+            scripts = self.api_call("script.get", {"output": ["name", "command"]})
+            if scripts:
+                audit_data["global_scripts_count"] = len(scripts)
+                audit_data["global_scripts_samples"] = [s.get("name", "") for s in scripts][:sample_limit]
+        except Exception: pass
+
+        # Detalhes de Proxies
+        try:
+            proxies = self.api_call("proxy.get", {"output": ["host", "status", "lastaccess", "version"]})
             if proxies:
-                for proxy in proxies:
-                    proxy_detail = {
-                        "name": proxy.get("name"),
-                        "operating_mode": "Ativo" if proxy.get("operating_mode") == "0" else "Passivo",
-                        "version": proxy.get("version"),
-                        "lastaccess_timestamp": proxy.get("lastaccess"),
-                        "groups": [g['name'] for g in proxy.get('proxyGroups', [])],
-                        "host_count": len(proxy.get('hosts', [])),
-                    }
-                    proxies_details.append(proxy_detail)
-        except Exception as e:
-            # Em um ambiente de produção, seria ideal logar este erro para facilitar o debug.
-            # Ex: self.view.log(f"Aviso: Falha ao coletar detalhes dos proxies: {e}", "warning")
-            pass
-        audit_data["total_proxies"] = len(proxies_details)
-        audit_data["proxies_details"] = proxies_details
+                audit_data["proxies_details"] = proxies[:sample_limit]
+        except Exception: pass
 
         return audit_data

@@ -88,6 +88,10 @@ class Controller:
         ai_prov = self.view.get_selected_base_provider()
         ai_key = self.view.ai_key_var.get().strip()
         ai_mod = self.view.get_selected_model()
+        history_limit = self.view.history_limit_var.get()
+        sample_limit = self.view.sample_limit_var.get()
+        template_limit = self.view.template_limit_var.get()
+        only_used_templates = self.view.only_used_templates_var.get()
         
         if not all([z_url, z_user, z_pass, ai_key, ai_mod]):
             self.view.log("ERRO: Preencha todas as configurações na aba 'Configurações' antes de iniciar.", "danger")
@@ -110,7 +114,7 @@ class Controller:
                 if self.cancel_event.is_set(): return
                 self.view.update_progress(30, "Coletando dados da API (Pode demorar)...")
                 self.view.log("Iniciando varredura profunda no Zabbix...")
-                zabbix_data = zabbix.collect_data()
+                zabbix_data = zabbix.collect_data(history_limit=history_limit, sample_limit=sample_limit, template_limit=template_limit, only_used_templates=only_used_templates)
                 self.view.log("Coleta de dados concluída com sucesso.")
                 
                 try:
@@ -173,11 +177,9 @@ class Controller:
             if not self.cancel_event.is_set():
                 self.view.log("Relatório gerado com sucesso!")
                 self.view.update_progress(100, "Auditoria Concluída!")
-
+                
         except Exception as e:
-            self.view.log(f"ERRO: {e}", "danger")
-            self.view.update_progress(0, "Erro durante a execução.")
+            self.view.log(f"Erro durante a execução da auditoria: {e}", "danger")
+            self.view.update_progress(0, "Falha na Auditoria")
         finally:
-            if 'zabbix' in locals() and getattr(zabbix, 'auth_token', None):
-                zabbix.logout()
             self.view.set_ui_state('normal')
