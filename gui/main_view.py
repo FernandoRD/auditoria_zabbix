@@ -1,6 +1,8 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.scrolled import ScrolledText
 from ttkbootstrap.constants import BOTH, X, LEFT, RIGHT, WORD, END
+from ttkbootstrap.dialogs import Messagebox
+from ttkbootstrap.tooltip import ToolTip
 import tkinter as tk
 import threading
 from tkinter import filedialog
@@ -56,6 +58,10 @@ class MainView(ttk.Window):
 
         self.chart_type_var = ttk.StringVar(value=self.settings.get("chart_type", "Linha"))
         self.chart_color_var = ttk.StringVar(value=self.settings.get("chart_color", "Padrão"))
+        self.chart_width_var = ttk.IntVar(value=self.settings.get("chart_width", 800))
+        self.chart_height_var = ttk.IntVar(value=self.settings.get("chart_height", 400))
+        self.chart_bg_color_var = ttk.StringVar(value=self.settings.get("chart_bg_color", "Branco"))
+        self.chart_text_color_var = ttk.StringVar(value=self.settings.get("chart_text_color", "Preto (Padrão)"))
 
         self.history_limit_var = ttk.IntVar(value=self.settings.get("history_limit", 500))
         self.sample_limit_var = ttk.IntVar(value=self.settings.get("sample_limit", 15))
@@ -101,6 +107,10 @@ class MainView(ttk.Window):
         self.settings["chart_font"] = self.chart_font_var.get()
         self.settings["chart_type"] = self.chart_type_var.get()
         self.settings["chart_color"] = self.chart_color_var.get()
+        self.settings["chart_width"] = self.chart_width_var.get()
+        self.settings["chart_height"] = self.chart_height_var.get()
+        self.settings["chart_bg_color"] = self.chart_bg_color_var.get()
+        self.settings["chart_text_color"] = self.chart_text_color_var.get()
         self.settings["history_limit"] = self.history_limit_var.get()
         self.settings["sample_limit"] = self.sample_limit_var.get()
         self.settings["custom_instructions"] = self.custom_instructions_text.text.get("1.0", END).strip()
@@ -431,15 +441,36 @@ class MainView(ttk.Window):
         chart_font = self.chart_font_var.get()
         chart_type = self.chart_type_var.get()
         chart_color = self.chart_color_var.get()
+        chart_width = self.chart_width_var.get()
+        chart_height = self.chart_height_var.get()
+        chart_bg_color = self.chart_bg_color_var.get()
+        chart_text_color = self.chart_text_color_var.get()
         ctype_en = "bar" if chart_type == "Barra" else "line"
+        
         color_map = {"Padrão": "", "Azul": "#3498db", "Vermelho": "#e74c3c", "Verde": "#2ecc71", "Laranja": "#e67e22", "Roxo": "#9b59b6"}
+        bg_color_map = {"Branco": "#ffffff", "Cinza Claro": "#f8f9fa", "Escuro": "#1e1e1e", "Transparente": "transparent"}
+        text_color_map = {"Preto (Padrão)": "#333333", "Branco": "#ffffff", "Cinza": "#7f8c8d"}
+        
         hex_color = color_map.get(chart_color, "")
-        theme_vars = f",\n                                themeVariables: {{ xyChart: {{ plotColorPalette: '{hex_color}' }} }}" if hex_color else ""
+        hex_bg = bg_color_map.get(chart_bg_color, "#ffffff")
+        hex_text = text_color_map.get(chart_text_color, "#333333")
+        
+        theme_vars_list = []
+        if hex_color: theme_vars_list.append(f"plotColorPalette: '{hex_color}'")
+        if hex_bg and hex_bg != "transparent": theme_vars_list.append(f"backgroundColor: '{hex_bg}'")
+        if hex_text:
+            for prop in ['titleColor', 'xAxisLabelColor', 'yAxisLabelColor', 'xAxisTitleColor', 'yAxisTitleColor', 'xAxisLineColor', 'yAxisLineColor', 'xAxisTickColor', 'yAxisTickColor']:
+                theme_vars_list.append(f"{prop}: '{hex_text}'")
+                
+        theme_vars_str = ", ".join(theme_vars_list)
+        theme_vars = f",\n                                themeVariables: {{ xyChart: {{ {theme_vars_str} }} }}" if theme_vars_list else ""
+        
+        extra_style = f"#mermaid-container {{ width: {chart_width}px; height: {chart_height}px; background-color: {hex_bg} !important; padding: 20px; border-radius: 8px; }} #mermaid-container svg {{ width: 100% !important; height: 100% !important; }}"
         
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch()
-                page = browser.new_page()
+                page = browser.new_page(viewport={'width': max(1200, chart_width + 200), 'height': max(800, chart_height + 200)}, device_scale_factor=1.3)
 
                 for i, match in enumerate(reversed(matches)):
                     chart_index = len(matches) - 1 - i
@@ -450,15 +481,17 @@ class MainView(ttk.Window):
                     code = re.sub(r'^\s*(?:line|bar)\s*\[', f'  {ctype_en} [', code, flags=re.MULTILINE)
                     output_file_path = os.path.join(temp_dir, f"chart_{chart_index}.png")
 
-                    html_content = base_html.replace("__EXTRA_STYLE__", "").replace(
+                    xychart_config = f",\n            xyChart: {{ width: {chart_width}, height: {chart_height} }}"
+                    html_content = base_html.replace("__EXTRA_STYLE__", extra_style).replace(
                         "__CODE__", html.escape(code)).replace(
                         "__FONT__", chart_font).replace(
-                        "__THEME_VARS__", theme_vars)
+                        "__THEME_VARS__", theme_vars).replace(
+                        "__XYCHART_CONFIG__", xychart_config)
 
                     try:
                         page.set_content(html_content)
                         page.wait_for_selector('#mermaid-container > svg', timeout=15000)
-                        chart_element = page.locator('#mermaid-container > svg')
+                        chart_element = page.locator('#mermaid-container')
                         
                         chart_element.screenshot(path=output_file_path)
 
@@ -548,6 +581,7 @@ class MainView(ttk.Window):
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.write(processed_content)
                 self.log(f"Relatório salvo com sucesso em: {file_path}")
+                self.show_dialog("Sucesso", f"Relatório exportado em:\n{file_path}")
             else:
                 self.log(f"Convertendo relatório para {ext}... Aguarde.", "info")
                 
@@ -685,6 +719,14 @@ class MainView(ttk.Window):
             self.report_text.text.see(END)
             self.report_text.text.configure(state="disabled")
         self.after(0, _append)
+
+    def show_dialog(self, title, message, is_error=False):
+        def _show():
+            if is_error:
+                Messagebox.show_error(message, title, parent=self)
+            else:
+                Messagebox.show_info(message, title, parent=self)
+        self.after(0, _show)
 
     def set_ui_state(self, state):
         self.start_button.configure(state=state)

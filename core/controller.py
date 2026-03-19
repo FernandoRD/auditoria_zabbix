@@ -55,9 +55,11 @@ class Controller:
             zabbix.logout()
             self.view.log(f"✅ Conexão bem-sucedida! Versão do Zabbix: {version}")
             self.view.update_progress(100, "Conexão Zabbix OK!")
+            self.view.show_dialog("Teste de Conexão", f"Conexão com Zabbix bem-sucedida!\nVersão detectada: {version}")
         except Exception as e:
             self.view.log(f"❌ Falha na conexão com Zabbix: {e}", "danger")
             self.view.update_progress(0, "Falha na conexão Zabbix.")
+            self.view.show_dialog("Falha de Conexão", f"Não foi possível conectar ao Zabbix:\n{e}", is_error=True)
         finally:
             self.view.set_ui_state('normal')
 
@@ -72,6 +74,7 @@ class Controller:
         """Inicia o processo de auditoria em uma nova thread para não travar a GUI."""
         self.cancel_event.clear()
         self.view.set_ui_state('disabled')
+        self.view.notebook.select(1) # Transição mágica para a aba "Logs"
         self.view.log("Iniciando auditoria (Usando Cache)..." if use_cache else "Iniciando auditoria (Nova Coleta)...")
         
         audit_thread = threading.Thread(target=self.run_audit_flow, args=(use_cache,))

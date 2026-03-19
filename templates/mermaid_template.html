@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <style>
-        body { margin: 0; background-color: white; padding: 15px; border-radius: 8px; __EXTRA_STYLE__ }
+        body { margin: 0; background-color: white; padding: 15px; border-radius: 8px; }
+        __EXTRA_STYLE__
     </style>
 </head>
 <body>
@@ -13,7 +14,7 @@
         mermaid.initialize({ 
             startOnLoad: false, 
             theme: 'default',
-            fontFamily: "__FONT__"__THEME_VARS__
+            fontFamily: "__FONT__"__THEME_VARS____XYCHART_CONFIG__
         });
         async function renderMermaid() {
             try {
