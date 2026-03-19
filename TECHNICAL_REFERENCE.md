@@ -1,0 +1,90 @@
+# 🛠️ Referência Técnica: Auditoria Inteligente de Zabbix
+
+Este documento descreve o funcionamento interno, a arquitetura e as decisões técnicas do projeto **Auditoria Inteligente de Zabbix**. Seu objetivo é servir como um guia para desenvolvedores que desejam manter, refatorar ou expandir a aplicação.
+
+---
+
+## 🏗️ Arquitetura do Projeto
+
+A aplicação segue uma arquitetura orientada a componentes, vagamente baseada no padrão **MVC (Model-View-Controller)**, para separar a interface gráfica das lógicas de negócio e comunicação com APIs externas.
+
+### Estrutura de Diretórios e Módulos
+
+- **`/gui` (View)**: Módulo responsável pela interface gráfica construída com `ttkbootstrap` (um wrapper moderno para `Tkinter`).
+  - `main_view.py`: Janela principal, abas, barras de progresso e motor de exportação de relatórios.
+  - `manage_accounts_view.py`, `style_settings_view.py`, etc.: Componentização das janelas secundárias (Modais) para evitar inchaço no arquivo principal.
+- **`/api` (Integrações / Model)**:
+  - `zabbix_api.py`: Classe `ZabbixClient`. Gerencia o protocolo JSON-RPC, autenticação nativa e as regras de negócio de extração de dados.
+  - `ai_api.py`: Classe `AIClient`. Abstrai múltiplos provedores de LLMs (Google Gemini, OpenAI, Anthropic, Ollama) entregando uma interface de consumo unificada via *Streams*.
+- **`/core` (Controller)**:
+  - `controller.py`: Classe `Controller`. Orquestra as ações do usuário. Gerencia as *Threads* (para evitar o congelamento da interface gráfica) e controla o estado da GUI (habilitar/desabilitar botões, atualizar barra de progresso).
+- **`/prompts`**:
+  - `report_template.txt`: O *System Prompt* central. Define a persona, a estrutura de tópicos exigida e as regras de formatação (ex: obrigatoriedade do uso de Mermaid.js).
+- **`/templates`**:
+  - HTMLs e DOCXs base usados pelos motores de renderização para padronizar a identidade visual de saída.
+
+---
+
+## ⚙️ Fluxos de Funcionamento Interno
+
+### 1. Autenticação e Adaptação de Versão (Zabbix API)
+O Zabbix mudou seu método de autenticação da versão 6.4 em diante. O método genérico baseado no *payload* (`"auth": "token"`) foi preterido em favor de cabeçalhos HTTP (`Authorization: Bearer token`).
+* **Como funciona:** O método `discover_version()` faz uma chamada não autenticada para `apiinfo.version`. O Python faz o *parse* da string resultante e ajusta a flag `self.use_header_auth`. Todas as chamadas subsequentes no método `api_call` injetam o token no local correto dinamicamente.
+
+### 2. Descoberta de Cluster HA (`get_active_node_hostid`)
+Extrair dados do nó errado em um cluster Active-Standby gera métricas vazias (gráficos flatlines).
+* **Como funciona:** O sistema executa um "Fallback Triplo":
+  1. Tenta usar a API nativa `hanode.get` (disponível no Zabbix 6.0+).
+  2. Se falhar, busca itens internos críticos (`zabbix[process,poller`) e avalia qual HostID teve o relógio (`clock`) de coleta mais recente nos últimos minutos.
+  3. Em último caso, procura por um host estático nomeado `"Zabbix server"`.
+
+### 3. Coleta e Estratégia de Amostragem (Sampling)
+A API do Zabbix pode retornar milhões de linhas. Enviar isso para uma IA causaria *Timeout* ou superaria a "Janela de Contexto" (Token Limit).
+* **Solução Implementada:** O método `collect_data()` agrupa os problemas. Em vez de enviar todos os itens de delay baixo, envia apenas os Top N (controlado via GUI).
+* **Cálculo de Gráficos (Trends):** Para desenhar os gráficos na IA, precisamos de dados históricos. Buscar 15 pontos recentes gera um gráfico "míope" (ex: últimos 15 minutos). A aplicação busca **N pontos (ex: 500)** no Zabbix e usa indexação reversa matemática (`history_data[0::step][:15]`) para espaçar os pontos temporalmente, criando tendências que representam horas ou dias condensados em apenas 15 valores no JSON.
+
+### 4. Geração do Relatório via IA
+* O `Controller` consolida o JSON do Zabbix, as instruções customizadas da tela e arquivos de texto anexados do SO (`evidencias_os.txt`).
+* O `ai_api.py` empacota isso no `report_template.txt`.
+* **Stream Mode:** O SDK da IA correspondente é chamado com `stream=True`. O `yield` do Python retorna os pedaços (*chunks*) do texto assim que chegam. O método `append_report_chunk` da GUI usa o `self.after(0, ...)` do Tkinter para desenhar essas letras na interface em tempo real de forma thread-safe.
+
+### 5. Renderização de Gráficos e Exportação (O Motor Playwright + Pandoc)
+A IA gera gráficos escrevendo blocos de código vetoriais na linguagem `mermaid`. No entanto, visualizadores offline (PDF/Word) não sabem interpretar blocos *Mermaid*.
+* **O Fluxo de Renderização (`_render_mermaid_charts`)**:
+  1. Uma expressão regular (`regex`) varre o Markdown extraindo blocos ```mermaid.
+  2. O `Playwright` (Navegador Headless Chromium) é instanciado.
+  3. O código Mermaid é injetado no arquivo `templates/mermaid_template.html` junto com as preferências de cor/fonte definidas na GUI.
+  4. O navegador abre a página, aguarda a injeção SVG (via DOM localizador) e tira um *Screenshot* PNG em um diretório temporário (`/tmp`).
+  5. O bloco de texto markdown do Mermaid é substituído localmente por uma tag de imagem `!Grafico`.
+* **A Geração Final (`_export_report_thread`)**:
+  * O Markdown manipulado (agora com links para imagens PNG reais) é passado para a biblioteca `pypandoc`.
+  * No caso do **PDF**, a aplicação não usa LaTeX (para evitar dependências de 1GB). Ela cria um HTML elegante combinando o conteúdo processado pelo Pandoc, gera uma página de Rosto (Capa) com CSS puro, e utiliza o Playwright novamente para imprimir esse HTML diretamente em `.pdf`.
+
+---
+
+## 🔌 Como Extender e Modificar
+
+### 1. Adicionando um Novo Provedor de IA
+Para adicionar um provedor como Groq, Cohere, etc:
+1. No `gui/main_view.py`, adicione o provedor no dicionário estático `self.ai_accounts` no `__init__`.
+2. No `api/ai_api.py`, atualize a classe `AIClient`:
+   * Modifique `get_available_models()` implementando o SDK ou chamada REST do provedor para listar os modelos.
+   * Modifique `generate_audit_report()` para inicializar o cliente do provedor, montar a mensagem com `system_instruction` e realizar o laço `for chunk in response: yield chunk.text`.
+
+### 2. Coletando Novas Métricas do Zabbix
+Deseja coletar o tempo médio de resposta de Pings, por exemplo?
+1. Modifique a função `collect_data()` em `api/zabbix_api.py`.
+2. Adicione uma nova chave no dicionário local: `audit_data["nova_metrica"] = dados_buscados`.
+3. **Obrigatório:** Vá no arquivo `prompts/report_template.txt` e adicione instruções para a IA analisar a sua nova métrica. Exemplo: *"Analise a seção `nova_metrica` e julgue se a latência está alta"*. Se não fizer isso, a IA frequentemente ignorará o dado solto no JSON.
+
+### 3. Alterando as Ferramentas Nativas Docker (Wayland / GUI)
+O projeto utiliza o `tkinter`, que requer comunicação com o Display Server (`X11`).
+O arquivo de script em bash/fish `exec_wayland.sh` mapeia os soquetes `/tmp/.X11-unix` e injeta `DISPLAY` para o contêiner rodar graficamente. Se você deseja portar isso para Windows localmente, deve-se gerar um arquivo `.exe` (via PyInstaller), visto que mapear servidor X no Windows Docker é complexo (requer VcXsrv).
+
+---
+
+## ⚠️ Pontos Críticos de Atenção (Gotchas)
+
+- **Manipulação de Interface Fora da Main Thread:** Nunca altere `self.log_text` ou `self.progress_bar` diretamente dentro dos métodos de `controller.py`. Use as interfaces do Tkinter (`self.view.log()`, `self.after(...)`) para enfileirar as atualizações visuais. Caso contrário, a aplicação sofrerá falhas silenciosas de violação de segmentação (Segfault).
+- **Mudanças no google-genai:** A API oficial do Gemini mudou em 2025 (`google-generativeai` descontinuado para `google-genai`). Mantenha os `requirements.txt` atualizados utilizando os objetos `Client` e `types.GenerateContentConfig` implementados atualmente na `ai_api.py`.
+- **Limpeza de Temp:** O gerador Mermaid cria instâncias e imagens temporárias. O bloco `finally` dentro da exportação deve ser mantido para garantir `shutil.rmtree()` e evitar esgotamento de disco no SO (inodes).
