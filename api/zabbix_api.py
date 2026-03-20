@@ -1,12 +1,16 @@
 import requests
 import json
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class ZabbixClient:
-    def __init__(self, url, user=None, password=None, token=None):
+    def __init__(self, url, user=None, password=None, token=None, verify_ssl=True):
         self.url = url
         self.user = user
         self.password = password
         self.token = token
+        self.verify_ssl = verify_ssl
         self.api_version = None
         self.use_header_auth = False
         self.auth_token = None
@@ -27,7 +31,7 @@ class ZabbixClient:
                 payload["auth"] = self.auth_token
 
         try:
-            response = requests.post(self.url, data=json.dumps(payload), headers=headers, timeout=30)
+            response = requests.post(self.url, data=json.dumps(payload), headers=headers, timeout=30, verify=self.verify_ssl)
             response.raise_for_status()
             result = response.json()
             

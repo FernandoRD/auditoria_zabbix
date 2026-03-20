@@ -10,6 +10,7 @@ import os
 import re
 import json
 import shutil
+import keyring
 import tempfile
 from dotenv import load_dotenv
 import html
@@ -48,6 +49,7 @@ class MainView(ttk.Window):
         self.zabbix_user_var = ttk.StringVar(value=self.settings.get("zabbix_user", os.getenv("ZABBIX_USER", "")))
         self.zabbix_pass_var = ttk.StringVar(value=self.settings.get("zabbix_pass", os.getenv("ZABBIX_PASS", "")))
         self.zabbix_token_var = ttk.StringVar(value=self.settings.get("zabbix_token", os.getenv("ZABBIX_TOKEN", "")))
+        self.zabbix_ignore_ssl_var = ttk.BooleanVar(value=self.settings.get("zabbix_ignore_ssl", False))
         self.ai_provider_var = ttk.StringVar(value=default_account)
         self.ai_key_var = ttk.StringVar(value=self.ai_accounts.get(default_account, {}).get("api_key", ""))
 
@@ -69,6 +71,7 @@ class MainView(ttk.Window):
         self.sample_limit_var = ttk.IntVar(value=self.settings.get("sample_limit", 15))
         self.template_limit_var = ttk.IntVar(value=self.settings.get("template_limit", 200))
         self.only_used_templates_var = ttk.BooleanVar(value=self.settings.get("only_used_templates", False))
+        self.anonymize_data_var = ttk.BooleanVar(value=self.settings.get("anonymize_data", False))
 
         self.custom_instructions_var = self.settings.get("custom_instructions", "")
 
@@ -96,15 +99,35 @@ class MainView(ttk.Window):
             except Exception:
                 pass
 
+        # Carrega dados sensíveis do Cofre do Sistema Operacional
+        try:
+            service = "AuditoriaZabbix"
+            z_pass = keyring.get_password(service, "zabbix_pass")
+            if z_pass is not None: self.settings["zabbix_pass"] = z_pass
+                
+            z_token = keyring.get_password(service, "zabbix_token")
+            if z_token is not None: self.settings["zabbix_token"] = z_token
+                
+            for account in self.ai_accounts.keys():
+                ai_key = keyring.get_password(service, f"{account}_api_key")
+                if ai_key is not None:
+                    self.ai_accounts[account]["api_key"] = ai_key
+        except Exception as e:
+            print(f"Aviso: Falha ao acessar o cofre de credenciais: {e}")
+
     def save_settings(self):
         self.settings["zabbix_url"] = self.zabbix_url_var.get()
         self.settings["zabbix_auth_method"] = self.zabbix_auth_method_var.get()
         self.settings["zabbix_user"] = self.zabbix_user_var.get()
-        self.settings["zabbix_pass"] = self.zabbix_pass_var.get()
-        self.settings["zabbix_token"] = self.zabbix_token_var.get()
+        self.settings["zabbix_ignore_ssl"] = self.zabbix_ignore_ssl_var.get()
         self.settings["ai_account"] = self.ai_provider_var.get()
-        self.settings["ai_accounts"] = self.ai_accounts
         
+        # Salva o dicionário de contas sem vazar as API Keys para o arquivo JSON
+        ai_accounts_safe = {}
+        for k, v in self.ai_accounts.items():
+            ai_accounts_safe[k] = {"provider": v.get("provider", k), "api_key": ""}
+        self.settings["ai_accounts"] = ai_accounts_safe
+
         self.settings["analyst_name"] = self.analyst_name_var.get()
         self.settings["analyst_company"] = self.analyst_company_var.get()
         self.settings["analyst_email"] = self.analyst_email_var.get()
@@ -121,9 +144,34 @@ class MainView(ttk.Window):
         self.settings["sample_limit"] = self.sample_limit_var.get()
         self.settings["template_limit"] = self.template_limit_var.get()
         self.settings["only_used_templates"] = self.only_used_templates_var.get()
+        self.settings["anonymize_data"] = self.anonymize_data_var.get()
         self.settings["custom_instructions"] = self.custom_instructions_text.text.get("1.0", END).strip()
-        if "api_keys" in self.settings:
-            del self.settings["api_keys"]
+
+        # Remove chaves legadas sensíveis do dicionário (se existirem de versões antigas)
+        for key in ["zabbix_pass", "zabbix_token", "api_keys"]:
+            if key in self.settings:
+                del self.settings[key]
+
+        # Grava os dados sensíveis no Cofre do Sistema Operacional (Keyring)
+        try:
+            service = "AuditoriaZabbix"
+            def safe_set(username, val):
+                if val:
+                    keyring.set_password(service, username, val)
+                else:
+                    try:
+                        keyring.delete_password(service, username)
+                    except Exception:
+                        pass
+            
+            safe_set("zabbix_pass", self.zabbix_pass_var.get())
+            safe_set("zabbix_token", self.zabbix_token_var.get())
+            
+            for account, info in self.ai_accounts.items():
+                safe_set(f"{account}_api_key", info.get("api_key", ""))
+        except Exception as e:
+            print(f"Aviso: Falha ao salvar no cofre de credenciais: {e}")
+
         try:
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, indent=4, ensure_ascii=False)
@@ -292,6 +340,8 @@ class MainView(ttk.Window):
         self.test_zabbix_button = ttk.Button(z_frame, text="🔌 Testar", command=self.test_zabbix_clicked, bootstyle="info-outline")
         self.test_zabbix_button.grid(row=4, column=2, padx=5)
         
+        ttk.Checkbutton(z_frame, text="Ignorar Validação SSL/TLS (Inseguro)", variable=self.zabbix_ignore_ssl_var, bootstyle="danger-round-toggle").grid(row=5, column=0, columnspan=3, sticky="w", pady=5)
+        
         self.toggle_zabbix_auth_fields()
 
         # --- Parâmetros de Coleta ---
@@ -308,6 +358,8 @@ class MainView(ttk.Window):
         ttk.Spinbox(collect_frame, from_=50, to=1000, increment=50, textvariable=self.template_limit_var, width=10).grid(row=2, column=1, sticky="w", pady=5, padx=5)
         
         ttk.Checkbutton(collect_frame, text="Coletar apenas templates em uso (vinculados a hosts)", variable=self.only_used_templates_var, bootstyle="round-toggle").grid(row=3, column=0, columnspan=2, sticky="w", pady=5, padx=5)
+        
+        ttk.Checkbutton(collect_frame, text="Anonimizar Dados Sensíveis (Ocultar IPs e Senhas)", variable=self.anonymize_data_var, bootstyle="info-round-toggle").grid(row=4, column=0, columnspan=2, sticky="w", pady=5, padx=5)
         
         # --- Dados do Analista ---
         analyst_frame = ttk.LabelFrame(left_col, text="Dados do Analista / Empresa (Cabeçalho do Relatório)")

@@ -1,6 +1,7 @@
 import threading
 from api import zabbix_api, ai_api
 import json
+import re
 import os
 
 class Controller:
@@ -47,12 +48,13 @@ class Controller:
         z_user = self.view.zabbix_user_var.get().strip()
         z_pass = self.view.zabbix_pass_var.get().strip()
         z_token = self.view.zabbix_token_var.get().strip()
+        verify_ssl = not self.view.zabbix_ignore_ssl_var.get()
         try:
             self.view.log(f"Testando conexão com o Zabbix em {z_url}...")
             if auth_method == "token":
-                zabbix = zabbix_api.ZabbixClient(z_url, token=z_token)
+                zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl)
             else:
-                zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass)
+                zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl)
                 
             version = zabbix.discover_version()
             if not version:
@@ -76,6 +78,15 @@ class Controller:
         self.view.update_progress(0, "Operação Cancelada.")
         self.view.set_ui_state('normal')
 
+    def _anonymize_text(self, text):
+        # Regex para mascarar endereços IPv4
+        ipv4_pattern = r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
+        # Mascaramos possíveis senhas expostas em macros ou no texto livre
+        password_pattern = r'(?i)(password|senha|pwd|secret)\s*[:=]\s*["\']?[^\s"\',}]+["\']?'
+        sanitized = re.sub(ipv4_pattern, 'XXX.XXX.X.XX', text)
+        sanitized = re.sub(password_pattern, r'\1 = "***"', sanitized)
+        return sanitized
+
     def start_audit(self, use_cache=False):
         """Inicia o processo de auditoria em uma nova thread para não travar a GUI."""
         self.cancel_event.clear()
@@ -93,6 +104,8 @@ class Controller:
         z_user = self.view.zabbix_user_var.get().strip()
         z_pass = self.view.zabbix_pass_var.get().strip()
         z_token = self.view.zabbix_token_var.get().strip()
+        verify_ssl = not self.view.zabbix_ignore_ssl_var.get()
+        anonymize = self.view.anonymize_data_var.get()
         ai_prov = self.view.get_selected_base_provider()
         ai_key = self.view.ai_key_var.get().strip()
         ai_mod = self.view.get_selected_model()
@@ -121,9 +134,9 @@ class Controller:
             if not use_cache:
                 self.view.update_progress(10, "Conectando ao Zabbix...")
                 if auth_method == "token":
-                    zabbix = zabbix_api.ZabbixClient(z_url, token=z_token)
+                    zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl)
                 else:
-                    zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass)
+                    zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl)
                     
                 self.view.log(f"Conectando ao Zabbix em {z_url}...")
                 version = zabbix.discover_version()
@@ -137,6 +150,13 @@ class Controller:
                 self.view.update_progress(30, "Coletando dados da API (Pode demorar)...")
                 self.view.log("Iniciando varredura profunda no Zabbix...")
                 zabbix_data = zabbix.collect_data(history_limit=history_limit, sample_limit=sample_limit, template_limit=template_limit, only_used_templates=only_used_templates)
+                
+                if anonymize:
+                    self.view.log("Anonimizando dados sensíveis (IPs e Senhas) da coleta...")
+                    zabbix_data_str = json.dumps(zabbix_data, ensure_ascii=False)
+                    zabbix_data_str = self._anonymize_text(zabbix_data_str)
+                    zabbix_data = json.loads(zabbix_data_str)
+
                 self.view.log("Coleta de dados concluída com sucesso.")
                 
                 try:
@@ -164,8 +184,11 @@ class Controller:
                 for filepath in self.view.attached_files:
                     try:
                         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            if anonymize:
+                                content = self._anonymize_text(content)
                             os_evidence_text += f"\n\n--- INÍCIO DO ARQUIVO: {filepath.split('/')[-1]} ---\n"
-                            os_evidence_text += f.read()
+                            os_evidence_text += content
                             os_evidence_text += f"\n--- FIM DO ARQUIVO: {filepath.split('/')[-1]} ---\n"
                     except Exception as e:
                         self.view.log(f"Aviso: Não foi possível ler o arquivo {filepath}: {e}")
