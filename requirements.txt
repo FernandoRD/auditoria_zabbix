@@ -6,3 +6,4 @@ ttkbootstrap
 python-dotenv
 pypandoc[tinytex]
 playwright
+keyring
