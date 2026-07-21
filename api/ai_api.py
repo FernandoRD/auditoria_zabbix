@@ -7,13 +7,20 @@ import anthropic
 import requests
 from datetime import datetime
 
+from api import ai_cli_client
+
 class AIClient:
-    def __init__(self, provider, api_key):
+    def __init__(self, provider, api_key, auth_mode="api_key", cli_model_override=None):
         self.provider = provider
         self.api_key = api_key
+        self.auth_mode = auth_mode
+        self.cli_model_override = cli_model_override
 
     def get_available_models(self):
         """Busca os modelos disponíveis baseados no provedor escolhido."""
+        if self.auth_mode == "cli":
+            return []
+
         if not self.api_key:
             return []
             
@@ -71,6 +78,10 @@ class AIClient:
             prompt = prompt_template.format(data_str=data_str, evidence_section=evidence_section, current_date=current_date, analyst_section=analyst_section, custom_instructions_section=custom_instructions_section)
         except FileNotFoundError:
             raise FileNotFoundError("Arquivo de template de prompt 'prompts/report_template.txt' não encontrado.")
+
+        if self.auth_mode == "cli":
+            yield from ai_cli_client.generate_via_cli(self.provider, prompt, self.cli_model_override)
+            return
 
         if self.provider == "Google Gemini":
             client = genai.Client(api_key=self.api_key)
