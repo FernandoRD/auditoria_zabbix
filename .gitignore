@@ -3,6 +3,15 @@
 settings.json
 last_audit_cache.json
 
+# Relatórios gerados e arquivos de lock (contêm dados reais de clientes)
+relatorio zabbix.docx
+relatorio_auditoria_zabbix.md
+~$*
+
+# Instaladores de terceiros (não devem ser versionados)
+*.deb
+*.msi
+
 # Cache do Python
 __pycache__/
 

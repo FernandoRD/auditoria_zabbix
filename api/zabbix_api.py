@@ -5,7 +5,7 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class ZabbixClient:
-    def __init__(self, url, user=None, password=None, token=None, verify_ssl=True):
+    def __init__(self, url, user=None, password=None, token=None, verify_ssl=True, logger=None):
         self.url = url
         self.user = user
         self.password = password
@@ -14,6 +14,12 @@ class ZabbixClient:
         self.api_version = None
         self.use_header_auth = False
         self.auth_token = None
+        self._logger = logger
+
+    def _warn(self, message):
+        """Reporta uma falha não-fatal de coleta, se um logger tiver sido fornecido."""
+        if self._logger:
+            self._logger(message)
 
     def api_call(self, method, params, auth_required=True):
         payload = {
@@ -150,7 +156,8 @@ class ZabbixClient:
         try:
             hgroups = self.api_call("hostgroup.get", {"output": ["name"]})
             audit_data["total_host_groups"] = len(hgroups) if hgroups else 0
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar grupos de hosts: {e}")
 
         # 3. Análise de Itens
         items = self.api_call("item.get", {
@@ -206,7 +213,8 @@ class ZabbixClient:
                 infra_hosts = self.api_call("host.get", {"output": ["hostid"], "groupids": gids})
                 for ih in infra_hosts:
                     infra_hostids_for_templates.add(ih["hostid"])
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao identificar hosts de infraestrutura do Zabbix: {e}")
 
         audit_data["zabbix_server_templates"] = []
         if infra_hostids_for_templates:
@@ -313,15 +321,16 @@ class ZabbixClient:
                                 history_data = [h["value"] for h in hist]
                         db_metrics.append({"name": item["name"], "key": item["key_"], "current_value": f"{item['lastvalue']} {item.get('units', '')}".strip(), "recent_trend": history_data})
                 audit_data["database_health_metrics"] = db_metrics
-        except Exception:
-            pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar métricas de saúde do banco de dados: {e}")
 
         # 6. Coletas Extras de Higiene e Risco
         # NVPS (New Values Per Second)
         try:
             nvps_item = self.api_call("item.get", {"output": ["lastvalue"], "search": {"key_": "zabbix[wcache,values"}, "hostids": active_hostid})
             audit_data["nvps"] = nvps_item[0].get("lastvalue", "0") if nvps_item else "Desconhecido"
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar NVPS: {e}")
 
         # Triggers Órfãs ou Quebradas
         try:
@@ -329,14 +338,16 @@ class ZabbixClient:
             if triggers:
                 audit_data["total_active_triggers"] = len(triggers)
                 audit_data["unsupported_triggers_count"] = len([t for t in triggers if t.get("state") == "1"])
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar triggers: {e}")
 
         # Discovery Rules (Regras de Descoberta Ativas)
         try:
             drules = self.api_call("drule.get", {"output": ["name", "delay", "iprange"], "filter": {"status": "0"}})
             audit_data["active_discovery_rules_count"] = len(drules) if drules else 0
             audit_data["active_discovery_rules_samples"] = drules[:sample_limit] if drules else []
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar regras de descoberta: {e}")
 
         # Alertas Falhos (Emails que não estão saindo)
         try:
@@ -344,14 +355,16 @@ class ZabbixClient:
             audit_data["recent_failed_alerts_count"] = len(failed_alerts) if failed_alerts else 0
             if failed_alerts:
                 audit_data["failed_alerts_errors_samples"] = list(set([a.get("error", "") for a in failed_alerts if a.get("error")]))[:sample_limit]
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar alertas falhos: {e}")
 
         # Problemas Críticos Não Reconhecidos
         try:
             problems = self.api_call("problem.get", {"output": ["name", "severity"], "filter": {"acknowledged": "0"}, "severities": [4, 5], "source": 0, "object": 0, "limit": history_limit})
             audit_data["unacknowledged_critical_problems_count"] = len(problems) if problems else 0
             audit_data["unacknowledged_critical_problems_samples"] = [p.get("name") for p in problems[:sample_limit]] if problems else []
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar problemas críticos não reconhecidos: {e}")
 
         # Configurações de Banco de Dados (Housekeeping)
         try:
@@ -360,7 +373,8 @@ class ZabbixClient:
                 audit_data["housekeeping_config"] = housekeeping[0]
             else:
                 audit_data["housekeeping_config"] = housekeeping
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar configurações de housekeeping: {e}")
 
         # Governança e Segurança: Usuários Super Admin
         try:
@@ -371,7 +385,8 @@ class ZabbixClient:
             if users:
                 audit_data["super_admin_users_count"] = len(users)
                 audit_data["super_admin_users_samples"] = [u.get("username", u.get("alias", "")) for u in users][:sample_limit]
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar usuários Super Admin: {e}")
 
         # Scripts Globais
         try:
@@ -379,13 +394,15 @@ class ZabbixClient:
             if scripts:
                 audit_data["global_scripts_count"] = len(scripts)
                 audit_data["global_scripts_samples"] = [s.get("name", "") for s in scripts][:sample_limit]
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar scripts globais: {e}")
 
         # Detalhes de Proxies
         try:
             proxies = self.api_call("proxy.get", {"output": ["host", "status", "lastaccess", "version"]})
             if proxies:
                 audit_data["proxies_details"] = proxies[:sample_limit]
-        except Exception: pass
+        except Exception as e:
+            self._warn(f"Aviso: falha ao coletar detalhes de proxies: {e}")
 
         return audit_data

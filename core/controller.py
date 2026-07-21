@@ -51,10 +51,11 @@ class Controller:
         verify_ssl = not self.view.zabbix_ignore_ssl_var.get()
         try:
             self.view.log(f"Testando conexão com o Zabbix em {z_url}...")
+            logger = lambda msg: self.view.log(msg, "warning")
             if auth_method == "token":
-                zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl)
+                zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl, logger=logger)
             else:
-                zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl)
+                zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl, logger=logger)
                 
             version = zabbix.discover_version()
             if not version:
@@ -133,10 +134,11 @@ class Controller:
             zabbix_data = {}
             if not use_cache:
                 self.view.update_progress(10, "Conectando ao Zabbix...")
+                logger = lambda msg: self.view.log(msg, "warning")
                 if auth_method == "token":
-                    zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl)
+                    zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl, logger=logger)
                 else:
-                    zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl)
+                    zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl, logger=logger)
                     
                 self.view.log(f"Conectando ao Zabbix em {z_url}...")
                 version = zabbix.discover_version()
@@ -162,7 +164,8 @@ class Controller:
                 try:
                     with open("last_audit_cache.json", "w", encoding="utf-8") as f:
                         json.dump(zabbix_data, f, ensure_ascii=False)
-                except: pass
+                except Exception as e:
+                    self.view.log(f"Aviso: Não foi possível salvar o cache local da auditoria: {e}", "warning")
             else:
                 self.view.update_progress(30, "Carregando dados do cache local...")
                 try:

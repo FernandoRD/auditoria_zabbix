@@ -1,6 +1,7 @@
 #!/bin/bash
 # Script de Coleta de Evidências de SO para Auditoria Zabbix
 # Execute este script no servidor Zabbix do cliente.
+set -uo pipefail
 
 OUTPUT_FILE="evidencias_os_zabbix_$(hostname)_$(date +%Y%m%d_%H%M%S).txt"
 
@@ -15,7 +16,11 @@ echo "O arquivo será salvo como: $OUTPUT_FILE"
     echo "=========================================================="
     
     echo -e "\n[SISTEMA OPERACIONAL]"
-    cat /etc/os-release | grep -E "^PRETTY_NAME=|^VERSION="
+    if [ -f /etc/os-release ]; then
+        grep -E "^PRETTY_NAME=|^VERSION=" /etc/os-release
+    else
+        echo "Arquivo /etc/os-release não encontrado."
+    fi
     
     echo -e "\n[USO DE MEMÓRIA (free -m)]"
     free -m

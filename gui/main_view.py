@@ -631,7 +631,6 @@ class MainView(ttk.Window):
         if not file_path:
             return
 
-        temp_dir_to_clean = None
         try:
             if not os.path.splitext(file_path)[1]:
                 selected = type_var.get()
@@ -800,15 +799,18 @@ class MainView(ttk.Window):
             self.controller.test_zabbix_connection()
             
     def update_progress(self, value, text):
-        self.progress_bar['value'] = value
-        self.status_var.set(text)
-        self.update_idletasks()
+        def _update():
+            self.progress_bar['value'] = value
+            self.status_var.set(text)
+        self.after(0, _update)
 
     def log(self, message, style="info"):
-        self.log_text.text.configure(state="normal")
-        self.log_text.text.insert(END, f"{message}\n")
-        self.log_text.text.see(END) # Auto-scroll
-        self.log_text.text.configure(state="disabled")
+        def _log():
+            self.log_text.text.configure(state="normal")
+            self.log_text.text.insert(END, f"{message}\n")
+            self.log_text.text.see(END) # Auto-scroll
+            self.log_text.text.configure(state="disabled")
+        self.after(0, _log)
 
     def clear_report(self):
         self.report_text.text.configure(state="normal")
