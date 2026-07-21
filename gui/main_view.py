@@ -20,6 +20,7 @@ import uuid
 from gui.manage_accounts_view import ManageAccountsWindow
 from gui.style_settings_view import StyleSettingsWindow
 from gui.manage_attachments_view import ManageAttachmentsWindow
+from api.ai_cli_client import cli_binary_status
 
 class MainView(ttk.Window):
     def __init__(self):
@@ -32,10 +33,10 @@ class MainView(ttk.Window):
         load_dotenv()
         self.settings_file = "settings.json"
         self.ai_accounts = {
-            "Google Gemini": {"provider": "Google Gemini", "api_key": os.getenv("GEMINI_API_KEY", "")},
-            "OpenAI": {"provider": "OpenAI", "api_key": os.getenv("OPENAI_API_KEY", "")},
-            "Anthropic": {"provider": "Anthropic", "api_key": os.getenv("ANTHROPIC_API_KEY", "")},
-            "Ollama": {"provider": "Ollama", "api_key": os.getenv("OLLAMA_URL", "http://localhost:11434")}
+            "Google Gemini": {"provider": "Google Gemini", "api_key": os.getenv("GEMINI_API_KEY", ""), "auth_mode": "api_key", "cli_model_override": ""},
+            "OpenAI": {"provider": "OpenAI", "api_key": os.getenv("OPENAI_API_KEY", ""), "auth_mode": "api_key", "cli_model_override": ""},
+            "Anthropic": {"provider": "Anthropic", "api_key": os.getenv("ANTHROPIC_API_KEY", ""), "auth_mode": "api_key", "cli_model_override": ""},
+            "Ollama": {"provider": "Ollama", "api_key": os.getenv("OLLAMA_URL", "http://localhost:11434"), "auth_mode": "api_key", "cli_model_override": ""}
         }
         self.settings = {}
         self.load_settings()
@@ -125,7 +126,12 @@ class MainView(ttk.Window):
         # Salva o dicionário de contas sem vazar as API Keys para o arquivo JSON
         ai_accounts_safe = {}
         for k, v in self.ai_accounts.items():
-            ai_accounts_safe[k] = {"provider": v.get("provider", k), "api_key": ""}
+            ai_accounts_safe[k] = {
+                "provider": v.get("provider", k),
+                "api_key": "",
+                "auth_mode": v.get("auth_mode", "api_key"),
+                "cli_model_override": v.get("cli_model_override", "")
+            }
         self.settings["ai_accounts"] = ai_accounts_safe
 
         self.settings["analyst_name"] = self.analyst_name_var.get()
@@ -187,17 +193,36 @@ class MainView(ttk.Window):
         account = self.ai_provider_var.get()
         account_info = self.ai_accounts.get(account, {})
         self.ai_key_var.set(account_info.get("api_key", ""))
-        
+
         base_provider = account_info.get("provider", "")
+        auth_mode = account_info.get("auth_mode", "api_key")
         if hasattr(self, 'ai_key_entry'):
             if base_provider == "Ollama":
                 self.ai_key_entry.configure(show="")
             else:
                 self.ai_key_entry.configure(show="*")
+            self.ai_key_entry.configure(state="disabled" if auth_mode == "cli" else "normal")
+        if hasattr(self, 'ai_auth_mode_label'):
+            if auth_mode == "cli":
+                binary, path = cli_binary_status(base_provider)
+                if path:
+                    self.ai_auth_mode_label.configure(text=f"Modo: CLI local ({binary}) ✅")
+                else:
+                    self.ai_auth_mode_label.configure(text=f"Modo: CLI local ({binary or '?'}) — binário não encontrado no PATH ❌")
+            else:
+                self.ai_auth_mode_label.configure(text="")
 
     def get_selected_base_provider(self):
         account = self.ai_provider_var.get()
         return self.ai_accounts.get(account, {}).get("provider", "Google Gemini")
+
+    def get_selected_auth_mode(self):
+        account = self.ai_provider_var.get()
+        return self.ai_accounts.get(account, {}).get("auth_mode", "api_key")
+
+    def get_selected_cli_model_override(self):
+        account = self.ai_provider_var.get()
+        return self.ai_accounts.get(account, {}).get("cli_model_override", "")
 
     def open_manage_accounts_window(self):
         ManageAccountsWindow(self)
@@ -392,10 +417,13 @@ class MainView(ttk.Window):
         self.ai_key_entry = ttk.Entry(ai_frame, textvariable=self.ai_key_var, show="*")
         self.ai_key_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=5, padx=5)
 
+        self.ai_auth_mode_label = ttk.Label(ai_frame, text="", bootstyle="info")
+        self.ai_auth_mode_label.grid(row=2, column=0, columnspan=3, sticky="w", padx=5)
+
         # Atualiza a visibilidade do campo caso a IA salva por padrão seja o Ollama
         self.on_provider_change()
-        
-        ttk.Button(ai_frame, text="🔄 Validar Conexão / Atualizar Modelos", command=self.validate_and_load_models, bootstyle="info-outline").grid(row=2, column=0, columnspan=3, pady=(10, 0))
+
+        ttk.Button(ai_frame, text="🔄 Validar Conexão / Atualizar Modelos", command=self.validate_and_load_models, bootstyle="info-outline").grid(row=3, column=0, columnspan=3, pady=(10, 0))
 
         # --- Estilos de Gráfico e Exportação ---
         export_frame = ttk.LabelFrame(right_col, text="Aparência e Exportação")
