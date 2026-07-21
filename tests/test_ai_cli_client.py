@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +11,7 @@ from api.ai_cli_client import (
     build_cli_command,
     build_cli_input_text,
     extract_cli_json_text,
+    generate_via_cli,
 )
 
 
@@ -103,6 +107,79 @@ class TestExtractCliJsonText(unittest.TestCase):
     def test_falls_back_to_raw_text_when_no_known_key(self):
         raw = '{"foo": "bar"}'
         self.assertEqual(extract_cli_json_text(raw), raw)
+
+
+class TestGenerateViaCliAnthropic(unittest.TestCase):
+    def test_yields_extracted_text(self):
+        with patch("api.ai_cli_client.shutil.which", return_value="/usr/bin/claude"), \
+             patch("api.ai_cli_client.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["claude"], returncode=0,
+                stdout='{"result": "Relatório gerado"}', stderr="",
+            )
+            chunks = list(generate_via_cli("Anthropic", "PROMPT", None))
+
+        self.assertEqual(chunks, ["Relatório gerado"])
+        called_cmd = mock_run.call_args.args[0]
+        self.assertEqual(called_cmd[0], "claude")
+        self.assertEqual(mock_run.call_args.kwargs["input"], "PROMPT")
+
+    def test_missing_binary_raises_before_running(self):
+        with patch("api.ai_cli_client.shutil.which", return_value=None), \
+             patch("api.ai_cli_client.subprocess.run") as mock_run:
+            with self.assertRaises(RuntimeError):
+                list(generate_via_cli("Anthropic", "PROMPT", None))
+        mock_run.assert_not_called()
+
+    def test_nonzero_exit_raises_with_stderr(self):
+        with patch("api.ai_cli_client.shutil.which", return_value="/usr/bin/claude"), \
+             patch("api.ai_cli_client.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["claude"], returncode=1, stdout="", stderr="sessão expirada",
+            )
+            with self.assertRaisesRegex(RuntimeError, "sessão expirada"):
+                list(generate_via_cli("Anthropic", "PROMPT", None))
+
+    def test_timeout_raises_runtime_error(self):
+        with patch("api.ai_cli_client.shutil.which", return_value="/usr/bin/claude"), \
+             patch("api.ai_cli_client.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=600)):
+            with self.assertRaisesRegex(RuntimeError, "600"):
+                list(generate_via_cli("Anthropic", "PROMPT", None))
+
+    def test_scratch_dir_is_removed_after_call(self):
+        created_dirs = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def spy_mkdtemp(*args, **kwargs):
+            d = real_mkdtemp(*args, **kwargs)
+            created_dirs.append(d)
+            return d
+
+        with patch("api.ai_cli_client.shutil.which", return_value="/usr/bin/claude"), \
+             patch("api.ai_cli_client.tempfile.mkdtemp", side_effect=spy_mkdtemp), \
+             patch("api.ai_cli_client.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["claude"], returncode=0, stdout='{"result": "ok"}', stderr="",
+            )
+            list(generate_via_cli("Anthropic", "PROMPT", None))
+
+        self.assertEqual(len(created_dirs), 1)
+        self.assertFalse(os.path.exists(created_dirs[0]))
+
+
+class TestGenerateViaCliOpenAI(unittest.TestCase):
+    def test_reads_output_file_written_by_codex(self):
+        def fake_run(cmd, input, cwd, timeout):
+            idx = cmd.index("-o")
+            with open(cmd[idx + 1], "w", encoding="utf-8") as f:
+                f.write("Relatório via Codex")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with patch("api.ai_cli_client.shutil.which", return_value="/usr/bin/codex"), \
+             patch("api.ai_cli_client.subprocess.run", side_effect=fake_run):
+            chunks = list(generate_via_cli("OpenAI", "PROMPT", None))
+
+        self.assertEqual(chunks, ["Relatório via Codex"])
 
 
 if __name__ == "__main__":
