@@ -169,7 +169,7 @@ class TestGenerateViaCliAnthropic(unittest.TestCase):
 
 class TestGenerateViaCliOpenAI(unittest.TestCase):
     def test_reads_output_file_written_by_codex(self):
-        def fake_run(cmd, input, cwd, timeout):
+        def fake_run(cmd, input, cwd, capture_output, text, timeout):
             idx = cmd.index("-o")
             with open(cmd[idx + 1], "w", encoding="utf-8") as f:
                 f.write("Relatório via Codex")
@@ -180,6 +180,28 @@ class TestGenerateViaCliOpenAI(unittest.TestCase):
             chunks = list(generate_via_cli("OpenAI", "PROMPT", None))
 
         self.assertEqual(chunks, ["Relatório via Codex"])
+
+    def test_missing_binary_raises_before_running(self):
+        with patch("api.ai_cli_client.shutil.which", return_value=None), \
+             patch("api.ai_cli_client.subprocess.run") as mock_run:
+            with self.assertRaises(RuntimeError):
+                list(generate_via_cli("OpenAI", "PROMPT", None))
+        mock_run.assert_not_called()
+
+    def test_nonzero_exit_raises_with_stderr(self):
+        with patch("api.ai_cli_client.shutil.which", return_value="/usr/bin/codex"), \
+             patch("api.ai_cli_client.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["codex"], returncode=1, stdout="", stderr="autenticação necessária",
+            )
+            with self.assertRaisesRegex(RuntimeError, "autenticação necessária"):
+                list(generate_via_cli("OpenAI", "PROMPT", None))
+
+    def test_timeout_raises_runtime_error(self):
+        with patch("api.ai_cli_client.shutil.which", return_value="/usr/bin/codex"), \
+             patch("api.ai_cli_client.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="codex", timeout=600)):
+            with self.assertRaisesRegex(RuntimeError, "600"):
+                list(generate_via_cli("OpenAI", "PROMPT", None))
 
 
 if __name__ == "__main__":

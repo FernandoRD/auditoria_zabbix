@@ -130,21 +130,7 @@ def generate_via_cli(provider, prompt, model_override=None, timeout=600):
         if provider == "OpenAI":
             output_file = os.path.join(scratch_dir, "codex_output.txt")
             cmd = build_cli_command(provider, model_override, codex_output_file=output_file)
-            try:
-                result = subprocess.run(
-                    cmd,
-                    input=input_text,
-                    cwd=scratch_dir,
-                    timeout=timeout,
-                )
-            except FileNotFoundError:
-                raise RuntimeError(f"Binário '{cmd[0]}' não encontrado no PATH.")
-            except subprocess.TimeoutExpired:
-                raise RuntimeError(f"A CLI '{cmd[0]}' não respondeu em {timeout}s (timeout).")
-
-            if result.returncode != 0:
-                raise RuntimeError(f"A CLI '{cmd[0]}' retornou erro (código {result.returncode})")
-
+            _run_cli_subprocess(cmd, input_text, scratch_dir, timeout)
             with open(output_file, "r", encoding="utf-8") as f:
                 text = f.read()
         else:
