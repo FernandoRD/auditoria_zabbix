@@ -15,13 +15,16 @@ A aplicação segue uma arquitetura orientada a componentes, vagamente baseada n
   - `manage_accounts_view.py`, `style_settings_view.py`, etc.: Componentização das janelas secundárias (Modais) para evitar inchaço no arquivo principal.
 - **`/api` (Integrações / Model)**:
   - `zabbix_api.py`: Classe `ZabbixClient`. Gerencia o protocolo JSON-RPC, autenticação nativa e as regras de negócio de extração de dados.
-  - `ai_api.py`: Classe `AIClient`. Abstrai múltiplos provedores de LLMs (Google Gemini, OpenAI, Anthropic, Ollama) entregando uma interface de consumo unificada via *Streams*.
+  - `ai_api.py`: Classe `AIClient`. Abstrai múltiplos provedores de LLMs (Google Gemini, OpenAI, Anthropic, Ollama) entregando uma interface de consumo unificada via *Streams*, com suporte a dois modos de autenticação por conta (`auth_mode`): `api_key` (SDK oficial) ou `cli` (delega para `ai_cli_client.py`).
+  - `ai_cli_client.py`: Funções puras de montagem de comando (`build_cli_command`, `build_cli_input_text`, `extract_cli_json_text`, `cli_binary_status`) e o orquestrador `generate_via_cli()`, que roda `claude`/`codex`/`gemini` como subprocesso sandboxed. Ver seção 4.1.
 - **`/core` (Controller)**:
   - `controller.py`: Classe `Controller`. Orquestra as ações do usuário. Gerencia as *Threads* (para evitar o congelamento da interface gráfica) e controla o estado da GUI (habilitar/desabilitar botões, atualizar barra de progresso).
 - **`/prompts`**:
   - `report_template.txt`: O *System Prompt* central. Define a persona, a estrutura de tópicos exigida e as regras de formatação (ex: obrigatoriedade do uso de Mermaid.js).
 - **`/templates`**:
   - HTMLs e DOCXs base usados pelos motores de renderização para padronizar a identidade visual de saída.
+- **`/tests`**:
+  - Testes unitários (`unittest`, stdlib — sem dependência de teste adicional) para `ai_cli_client.py`, o modo CLI de `ai_api.py` e o wiring de `auth_mode` em `controller.py`. Rodar com `python3 -m unittest discover -s tests -v`.
 
 ---
 

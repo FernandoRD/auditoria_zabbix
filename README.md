@@ -28,19 +28,26 @@ Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura 
 auditoria_zabbix/
 ├── api/
 │   ├── ai_api.py          # Integração unificada (Gemini, OpenAI, Anthropic, Ollama)
+│   ├── ai_cli_client.py   # Execução sandboxed das CLIs locais (claude/codex/gemini)
 │   └── zabbix_api.py      # Comunicação e métodos da Zabbix API
 ├── core/
 │   └── controller.py      # Lógica de negócio e orquestração de Threads
 ├── gui/
-│   └── main_view.py       # Interface de usuário (ttkbootstrap)
+│   ├── main_view.py             # Janela principal (ttkbootstrap)
+│   ├── manage_accounts_view.py  # Modal de contas de IA (API Key / CLI local)
+│   ├── manage_attachments_view.py
+│   └── style_settings_view.py
 ├── prompts/
 │   └── report_template.txt # Template injetável do contexto enviado para a IA
 ├── templates/
 │   ├── mermaid_template.html # Template base para renderização vetorial de gráficos
 │   └── report_template.docx  # Documento de referência do Pandoc (se existir)
+├── tests/                 # Testes unitários (unittest, stdlib)
+├── tools/
+│   └── coleta_zabbix_os.sh # Script de coleta de evidências do SO
 ├── .env.example           # Exemplo de arquivo de credenciais
 ├── main.py                # Ponto de entrada da aplicação
-└── requirements.txt       # Dependências do projeto
+└── requirements.txt       # Dependências do projeto (versões fixadas)
 ```
 
 ---
@@ -50,7 +57,7 @@ auditoria_zabbix/
 ### 1. Pré-requisitos
 - Python 3.8+ instalado.
 - Acesso à API de um servidor Zabbix (URL, Usuário e Senha).
-- Chave de API do Google Gemini (obtenha no Google AI Studio).
+- Uma credencial de IA: chave de API de **Google Gemini**, **OpenAI** ou **Anthropic** — ou, alternativamente, a CLI oficial do provedor já instalada e autenticada (`claude`/`codex`/`gemini`, veja "Modo CLI local" abaixo) ou um servidor **Ollama** local.
 
 ### 2. Instalação
 Clone ou baixe este repositório e navegue até a pasta do projeto:
@@ -86,7 +93,7 @@ GEMINI_API_KEY="SUA_CHAVE_DO_GOOGLE_GEMINI"
    python main.py
    ```
 2. **(Opcional) Evidências de SO**: Se você tiver acesso ao servidor Linux onde o Zabbix está hospedado, execute o script `coleta_zabbix_os.sh` fornecido junto com a ferramenta. Ele gerará um arquivo `.txt`. Clique no botão **"📎 Anexar Evidências OS"** na interface para carregar este arquivo.
-3. Selecione o modelo de IA desejado (padrão: `gemini-1.5-pro-latest`).
+3. Selecione a conta/provedor de IA e o modelo desejado (a lista de modelos é buscada dinamicamente ao validar a conexão, exceto em modo CLI local).
 4. Clique em **"Iniciar Auditoria"**.
 5. Acompanhe o progresso na aba "Logs da Execução". Assim que finalizado, o relatório em Markdown estará disponível na aba "Relatório Final" e será salvo automaticamente na pasta do projeto como `relatorio_auditoria_zabbix.md`.
 
@@ -115,7 +122,7 @@ Em vez de pagar por token via API, cada conta de IA (Anthropic, OpenAI, Google G
 ## ⚠️ Avisos e Segurança
 
 - **Acesso de Leitura**: A aplicação realiza **apenas leituras** no banco do Zabbix (métodos `*.get` e `apiinfo.version`). Nenhuma configuração do Zabbix será alterada pela ferramenta.
-- **Privacidade de Dados**: As métricas extraídas (nomes de hosts, chaves de itens e templates) são enviadas para a API do Google Gemini. Certifique-se de que isso não viola as políticas de segurança e LGPD da sua empresa ou do seu cliente.
+- **Privacidade de Dados**: As métricas extraídas (nomes de hosts, chaves de itens e templates) são enviadas ao provedor de IA selecionado (Google Gemini, OpenAI, Anthropic ou Ollama local) — via API paga ou via CLI local, conforme o modo escolhido. Use a opção "Anonimizar Dados Sensíveis" quando aplicável, e certifique-se de que o envio não viola as políticas de segurança e LGPD da sua empresa ou do seu cliente.
 
 ---
 *Desenvolvido como uma ferramenta de automação e consultoria inteligente.*
