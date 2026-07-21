@@ -48,6 +48,16 @@ A API do Zabbix pode retornar milhões de linhas. Enviar isso para uma IA causar
 * O `ai_api.py` empacota isso no `report_template.txt`.
 * **Stream Mode:** O SDK da IA correspondente é chamado com `stream=True`. O `yield` do Python retorna os pedaços (*chunks*) do texto assim que chegam. O método `append_report_chunk` da GUI usa o `self.after(0, ...)` do Tkinter para desenhar essas letras na interface em tempo real de forma thread-safe.
 
+### 4.1. Modo CLI local dos provedores de IA (`api/ai_cli_client.py`)
+
+Alternativa ao SDK: quando a conta tem `auth_mode == "cli"`, `AIClient.generate_audit_report()` não chama nenhum SDK — delega para `ai_cli_client.generate_via_cli(provider, prompt, model_override)`, que roda o binário da CLI oficial do provedor (`claude`/`codex`/`gemini`) como subprocesso.
+
+* **Por que não SDK/API key:** o objetivo é usar a assinatura (Claude Pro/Max, ChatGPT Plus/Pro, Gemini Advanced) do usuário, não cobrança por token. Isso é feito chamando a própria CLI oficial em modo headless — não reimplementando o fluxo OAuth dela (o que violaria os Termos de Uso de cada provedor e dependeria de Client IDs não documentados).
+* **Sandboxing obrigatório:** as três CLIs são agentes de codificação por padrão (têm acesso a shell/arquivos). `generate_via_cli` sempre roda com ferramentas desabilitadas ou sandbox somente-leitura (`--allowedTools ""` no `claude`, `--sandbox read-only` no `codex`, `--approval-mode plan` no `gemini`) e com `cwd` em um diretório temporário isolado (removido em `finally`), para que a CLI se comporte só como motor de texto.
+* **Entrada via stdin:** o prompt completo (JSON de auditoria + template) é enviado via stdin do subprocesso, nunca como argumento de linha de comando — evita estourar limites de tamanho de argumento do SO com JSONs grandes.
+* **Extração da resposta:** `claude`/`gemini` usam `--output-format json`; `extract_cli_json_text` tenta as chaves `result`/`response`/`text`/`content` e cai para o stdout bruto se o schema não bater (defensivo — os schemas dessas CLIs não são um contrato público estável). `codex` grava a última mensagem direto em arquivo via `-o` (`--output-last-message`), sem necessidade de parsing.
+* **Sem streaming na v1:** todas as três variantes fazem `yield` do texto completo de uma vez (sem incrementalidade) — os schemas de evento `stream-json` de `codex`/`gemini` não foram validados contra chamadas reais.
+
 ### 5. Renderização de Gráficos e Exportação (O Motor Playwright + Pandoc)
 A IA gera gráficos escrevendo blocos de código vetoriais na linguagem `mermaid`. No entanto, visualizadores offline (PDF/Word) não sabem interpretar blocos *Mermaid*.
 * **O Fluxo de Renderização (`_render_mermaid_charts`)**:
@@ -88,3 +98,4 @@ O arquivo de script em bash/fish `exec_wayland.sh` mapeia os soquetes `/tmp/.X11
 - **Manipulação de Interface Fora da Main Thread:** Nunca altere `self.log_text` ou `self.progress_bar` diretamente dentro dos métodos de `controller.py`. Use as interfaces do Tkinter (`self.view.log()`, `self.after(...)`) para enfileirar as atualizações visuais. Caso contrário, a aplicação sofrerá falhas silenciosas de violação de segmentação (Segfault).
 - **Mudanças no google-genai:** A API oficial do Gemini mudou em 2025 (`google-generativeai` descontinuado para `google-genai`). Mantenha os `requirements.txt` atualizados utilizando os objetos `Client` e `types.GenerateContentConfig` implementados atualmente na `ai_api.py`.
 - **Limpeza de Temp:** O gerador Mermaid cria instâncias e imagens temporárias. O bloco `finally` dentro da exportação deve ser mantido para garantir `shutil.rmtree()` e evitar esgotamento de disco no SO (inodes).
+- **Nunca use `claude --bare` em `ai_cli_client.py`:** essa flag desativa explicitamente a leitura de OAuth/keychain ("Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper... OAuth and keychain are never read") — quebraria exatamente a autenticação via assinatura que o modo CLI local depende. Reduções de overhead da CLI devem vir do `cwd` isolado (diretório temp sem `CLAUDE.md`/config de projeto por perto), não dessa flag.
