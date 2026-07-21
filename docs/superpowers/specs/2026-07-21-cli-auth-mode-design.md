@@ -24,6 +24,7 @@ Não inclui: Ollama (já é local, sem mudança). Não inclui streaming real (ve
 ## Arquitetura
 
 Cada conta de IA em `ai_accounts` (hoje `{"provider": ..., "api_key": ...}`) ganha um campo `auth_mode`: `"api_key"` (padrão, retrocompatível) ou `"cli"`. Quando `"cli"`:
+
 - O campo `api_key` fica vazio/não utilizado para chamadas.
 - Um novo campo opcional `cli_model_override` guarda um alias/nome de modelo a passar via `--model`/`-m` (se vazio, a flag é omitida e a CLI usa o modelo padrão configurado por ela mesma).
 
