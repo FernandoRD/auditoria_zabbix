@@ -13,12 +13,19 @@ class Controller:
     def load_models_async(self):
         """Inicia a busca pelos modelos na IA escolhida."""
         provider = self.view.get_selected_base_provider()
+
+        if self.view.get_selected_auth_mode() == "cli":
+            override = self.view.get_selected_cli_model_override()
+            model = override if override else "(modelo padrão da CLI)"
+            self.view.update_model_list([model], model)
+            return
+
         api_key = self.view.ai_key_var.get().strip()
-        
+
         if not api_key:
             self.view.update_model_list(["Insira a API Key primeiro..."], None)
             return
-            
+
         self.view.model_combo.set(f"Conectando à {provider}...")
         thread = threading.Thread(target=self._fetch_and_update_models)
         thread.daemon = True
@@ -110,16 +117,19 @@ class Controller:
         ai_prov = self.view.get_selected_base_provider()
         ai_key = self.view.ai_key_var.get().strip()
         ai_mod = self.view.get_selected_model()
+        ai_auth_mode = self.view.get_selected_auth_mode()
+        ai_cli_model_override = self.view.get_selected_cli_model_override()
         history_limit = self.view.history_limit_var.get()
         sample_limit = self.view.sample_limit_var.get()
         template_limit = self.view.template_limit_var.get()
         only_used_templates = self.view.only_used_templates_var.get()
-        
-        if not all([z_url, ai_key, ai_mod]):
+
+        required_fields = [z_url, ai_mod] if ai_auth_mode == "cli" else [z_url, ai_key, ai_mod]
+        if not all(required_fields):
             self.view.log("ERRO: Preencha todas as configurações na aba 'Configurações' antes de iniciar.", "danger")
             self.view.set_ui_state('normal')
             return
-            
+
         if auth_method == "token" and not z_token:
             self.view.log("ERRO: Informe o API Token do Zabbix.", "danger")
             self.view.set_ui_state('normal')
@@ -208,7 +218,7 @@ class Controller:
             if self.cancel_event.is_set(): return
             self.view.update_progress(60, "Conectando à Inteligência Artificial...")
             self.view.log(f"Enviando dados para {ai_prov} (Modelo: {ai_mod}). Aguarde...")
-            ai_client = ai_api.AIClient(ai_prov, ai_key)
+            ai_client = ai_api.AIClient(ai_prov, ai_key, auth_mode=ai_auth_mode, cli_model_override=ai_cli_model_override)
             
             self.view.clear_report()
             self.view.notebook.select(2) # Troca a aba visual para o "Relatório Final" automaticamente

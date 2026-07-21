@@ -7,6 +7,7 @@ Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura 
 ## ✨ Funcionalidades
 
 - **Suporte Multi-IA**: Compatível com provedores líderes de mercado (**Google Gemini**, **OpenAI**, **Anthropic Claude**) e suporte a execução de LLMs locais via **Ollama** para ambientes restritos ou isolados.
+- **Autenticação via CLI local (assinatura)**: Além de API key, cada conta Anthropic/OpenAI/Google Gemini pode usar a CLI oficial já instalada e autenticada na máquina (`claude`, `codex`, `gemini`) em vez de cobrança por token — útil para quem já tem Claude Pro/Max, ChatGPT Plus/Pro ou Gemini Advanced. A aplicação chama a CLI em modo headless/somente-leitura (sem acesso a arquivos ou shell), nunca lê ou manipula o token OAuth diretamente. Veja "Modo CLI local" abaixo.
 - **Extração Automatizada via Zabbix API**: Coleta dados de Hosts, Itens (identificando polling agressivo e scripts externos), Templates e Proxies.
 - **Inteligência de Cluster (HA Nativo)**: Descobre automaticamente qual é o nó *Active* do servidor em ambientes de Alta Disponibilidade para coletar métricas reais, ignorando nós *Standby*.
 - **Análise de Saúde Interna (Zabbix Health)**: Extrai o histórico recente de processos internos críticos (pollers, history syncers, caches, queue).
@@ -88,6 +89,26 @@ GEMINI_API_KEY="SUA_CHAVE_DO_GOOGLE_GEMINI"
 3. Selecione o modelo de IA desejado (padrão: `gemini-1.5-pro-latest`).
 4. Clique em **"Iniciar Auditoria"**.
 5. Acompanhe o progresso na aba "Logs da Execução". Assim que finalizado, o relatório em Markdown estará disponível na aba "Relatório Final" e será salvo automaticamente na pasta do projeto como `relatorio_auditoria_zabbix.md`.
+
+---
+
+## 🖥️ Modo CLI local (alternativa à API Key)
+
+Em vez de pagar por token via API, cada conta de IA (Anthropic, OpenAI, Google Gemini) pode ser configurada para usar a CLI oficial do provedor, já autenticada na sua máquina com a sua assinatura:
+
+| Provedor | CLI | Autenticar com |
+|---|---|---|
+| Anthropic | [`claude`](https://docs.claude.com/claude-code) (Claude Code) | `claude login` |
+| OpenAI | [`codex`](https://developers.openai.com/codex/cli) | `codex login` |
+| Google Gemini | [`gemini`](https://github.com/google-gemini/gemini-cli) | `gemini` (fluxo de login na primeira execução) |
+
+**Como habilitar:** em "⚙️ Gerenciar" (ao lado de "Conta/Provedor"), ative o toggle "Usar CLI local (assinatura) em vez de API Key" na conta desejada. A tela mostra se o binário foi encontrado no `PATH`. Ollama não tem esse modo — já é local.
+
+**Importante:**
+- O binário precisa estar instalado e autenticado (`claude login`/`codex login`/login do `gemini`) *antes* de rodar uma auditoria nesse modo — a aplicação não faz login por você e não lê/gera tokens OAuth.
+- Esse modo usa o modo headless/scriptável oficial de cada CLI, sempre com ferramentas desabilitadas ou sandbox somente-leitura (a aplicação nunca deixa a CLI executar comandos ou editar arquivos no seu sistema).
+- Usar a assinatura fora da CLI/app oficial pode estar sujeito aos Termos de Uso do provedor — este modo usa a CLI oficial diretamente (não reimplementa o login), mas a responsabilidade pelo uso de acordo com a assinatura contratada é do usuário.
+- A v1 não tem streaming incremental no modo CLI: o relatório aparece de uma vez quando a CLI termina, em vez de "digitando" aos poucos como no modo API key.
 
 ---
 
