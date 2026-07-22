@@ -5,7 +5,6 @@ anthropic==0.117.0
 ttkbootstrap==1.20.4
 python-dotenv==1.2.2
 pypandoc[tinytex]==1.17
-playwright==1.61.0
 keyring==25.7.0
 matplotlib==3.11.1
 typst==0.15.0
