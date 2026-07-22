@@ -13,15 +13,19 @@ import shutil
 import keyring
 import tempfile
 from dotenv import load_dotenv
-import html
 from datetime import datetime
-import pathlib
-import uuid
 from gui.manage_accounts_view import ManageAccountsWindow
 from gui.style_settings_view import StyleSettingsWindow
 from gui.manage_attachments_view import ManageAttachmentsWindow
 from api.ai_cli_client import cli_binary_status
 from core import chart_renderer
+
+def _escape_typst_text(text):
+    """Escapa caracteres com significado especial em markup Typst (usado só para os
+    campos de texto livre da capa do PDF — nome/empresa do analista)."""
+    for ch in ['\\', '#', '*', '_', '`', '<', '>', '@', '$', '[', ']']:
+        text = text.replace(ch, '\\' + ch)
+    return text
 
 class MainView(ttk.Window):
     def __init__(self):
@@ -674,64 +678,47 @@ class MainView(ttk.Window):
                 
                 if to_format == 'pdf':
                     try:
-                        html_body = pypandoc.convert_text(processed_content, 'html', format='gfm+hard_line_breaks')
-                        
-                        author_field = author_name if author_name else "Analista de Monitoramento"
-                        if company_name:
-                            author_field += f" - {company_name}"
-                        current_date = datetime.now().strftime("%d/%m/%Y")
-                        
-                        full_html = f"""
-                        <!DOCTYPE html><html><head><meta charset="UTF-8">
-                        <style>
-                            body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; }}
-                            h1, h2, h3 {{ color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 30px; }}
-                            a {{ color: #3498db; text-decoration: none; }}
-                            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; page-break-inside: avoid; }}
-                            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                            th {{ background-color: #f8f9fa; font-weight: bold; }}
-                            .cover-page {{ text-align: center; margin-top: 30%; page-break-after: always; }}
-                            .cover-title {{ font-size: 2.8em; font-weight: bold; margin-bottom: 20px; color: #2c3e50; }}
-                            .cover-author {{ font-size: 1.5em; margin-bottom: 10px; color: #7f8c8d; }}
-                            .cover-date {{ font-size: 1.2em; color: #95a5a6; }}
-                            img {{ max-width: 100%; height: auto; display: block; margin: 15px auto; page-break-inside: avoid; }}
-                            pre {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto; page-break-inside: avoid; border: 1px solid #eee; }}
-                            code {{ font-family: Consolas, monospace; background-color: #f8f9fa; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }}
-                            blockquote {{ border-left: 4px solid #3498db; padding-left: 15px; color: #555; font-style: italic; }}
-                        </style>
-                        </head><body>
-                            <div class="cover-page">
-                                <div class="cover-title">Relatório Técnico de Auditoria Zabbix</div>
-                                <div class="cover-author">{author_field}</div>
-                                <div class="cover-date">{current_date}</div>
-                            </div>
-                            {html_body}
-                        </body></html>
-                        """
-                        
-                        temp_html_path = os.path.join(tempfile.gettempdir(), f"zabbix_report_temp_{uuid.uuid4().hex}.html")
-                        with open(temp_html_path, "w", encoding="utf-8") as f:
-                            f.write(full_html)
-                        
-                        from playwright.sync_api import sync_playwright
-                        with sync_playwright() as p:
-                            browser = p.chromium.launch()
-                            page = browser.new_page()
-                            page.goto(pathlib.Path(temp_html_path).absolute().as_uri())
-                            page.wait_for_load_state('networkidle')
-                            page.pdf(
-                                path=file_path, 
-                                format="A4", 
-                                margin={"top": "2.5cm", "bottom": "2.5cm", "left": "2cm", "right": "2cm"}, 
-                                print_background=True, 
-                                display_header_footer=True, 
-                                footer_template='<div style="font-size: 10px; text-align: center; width: 100%; color: #7f8c8d;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>', 
-                                header_template='<div></div>'
-                            )
-                            browser.close()
-                            
-                        os.remove(temp_html_path)
-                        self.log(f"Relatório exportado com sucesso em: {file_path}")
+                        pandoc_version = pypandoc.get_pandoc_version()
+                        version_tuple = tuple(int(p) for p in pandoc_version.split('.')[:3])
+                        if version_tuple < (3, 1, 7):
+                            self.log(f"Pandoc {pandoc_version} não suporta o writer Typst (requer >= 3.1.7). Baixando versão atualizada...", "warning")
+                            pypandoc.download_pandoc()
+
+                        typst_body = pypandoc.convert_text(processed_content, 'typst', format='gfm+hard_line_breaks')
+
+                        pdf_root_dir = temp_dir_to_clean
+                        created_pdf_root = False
+                        if not pdf_root_dir:
+                            pdf_root_dir = tempfile.mkdtemp(prefix="zabbix_report_typst_")
+                            created_pdf_root = True
+                        else:
+                            temp_dir_norm = pdf_root_dir.replace('\\', '/')
+                            typst_body = typst_body.replace(f'image("{temp_dir_norm}/', 'image("')
+
+                        try:
+                            author_field = author_name if author_name else "Analista de Monitoramento"
+                            if company_name:
+                                author_field += f" - {company_name}"
+                            current_date = datetime.now().strftime("%d/%m/%Y")
+
+                            with open("templates/report_template.typ", "r", encoding="utf-8") as f:
+                                typst_template = f.read()
+
+                            full_typst = typst_template.replace("__TITLE__", "Relatório Técnico de Auditoria Zabbix").replace(
+                                "__AUTHOR__", _escape_typst_text(author_field)).replace(
+                                "__DATE__", current_date).replace(
+                                "__BODY__", typst_body)
+
+                            typst_source_path = os.path.join(pdf_root_dir, "report.typ")
+                            with open(typst_source_path, "w", encoding="utf-8") as f:
+                                f.write(full_typst)
+
+                            import typst
+                            typst.compile(typst_source_path, output=file_path, root=pdf_root_dir)
+                            self.log(f"Relatório exportado com sucesso em: {file_path}")
+                        finally:
+                            if created_pdf_root:
+                                shutil.rmtree(pdf_root_dir, ignore_errors=True)
                     except Exception as e:
                         self.log(f"Erro ao exportar PDF: {e}", "danger")
                 else:
