@@ -3,7 +3,7 @@
   margin: (top: 2.5cm, bottom: 2.5cm, left: 2cm, right: 2cm),
   numbering: "1 / 1",
 )
-#set text(font: "DejaVu Sans", size: 11pt, lang: "pt")
+#set text(font: "Libertinus Serif", size: 11pt, lang: "pt")
 #set heading(numbering: none)
 #show heading.where(level: 1): set text(size: 18pt, weight: "bold")
 #show heading.where(level: 2): set text(size: 14pt, weight: "bold")
