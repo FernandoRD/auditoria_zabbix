@@ -7,12 +7,10 @@ ENV PYTHONUNBUFFERED=1
 
 # Atualizar pacotes e instalar dependências de sistema
 # - python3-tk e tk-dev: Necessários para renderizar a interface gráfica Tkinter
-# - pandoc: Necessário para o pypandoc exportar os relatórios
 # - dependências extras para garantir o correto funcionamento do sistema
 RUN apt-get update && apt-get install -y \
     python3-tk \
     tk-dev \
-    pandoc \
     wget \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -23,13 +21,13 @@ WORKDIR /app
 # Copiar o arquivo de dependências primeiro para aproveitar o cache do Docker
 COPY requirements.txt .
 
-# Instalar as dependências do Python
+# Instalar as dependências do Python (inclui matplotlib e typst, sem dependências de sistema extras)
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Instalar o Playwright e executar a instalação dos navegadores com dependências do sistema
-RUN pip install playwright && \
-    playwright install --with-deps chromium
+# Baixar o binário do Pandoc (>= 3.1.7, necessário para o writer Typst) via pypandoc,
+# em vez do pacote "pandoc" do apt (Debian slim traz uma versão 2.x sem suporte a Typst)
+RUN python -c "import pypandoc; pypandoc.download_pandoc()"
 
 # CACHE BUST START (Não fazer cache daqui em diante)
 ARG CACHEBUST=1 

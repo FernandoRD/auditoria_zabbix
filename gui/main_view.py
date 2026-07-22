@@ -13,14 +13,19 @@ import shutil
 import keyring
 import tempfile
 from dotenv import load_dotenv
-import html
 from datetime import datetime
-import pathlib
-import uuid
 from gui.manage_accounts_view import ManageAccountsWindow
 from gui.style_settings_view import StyleSettingsWindow
 from gui.manage_attachments_view import ManageAttachmentsWindow
 from api.ai_cli_client import cli_binary_status
+from core import chart_renderer
+
+def _escape_typst_text(text):
+    """Escapa caracteres com significado especial em markup Typst (usado só para os
+    campos de texto livre da capa do PDF — nome/empresa do analista)."""
+    for ch in ['\\', '#', '*', '_', '`', '<', '>', '@', '$', '[', ']']:
+        text = text.replace(ch, '\\' + ch)
+    return text
 
 class MainView(ttk.Window):
     def __init__(self):
@@ -537,113 +542,53 @@ class MainView(ttk.Window):
 
     def _render_mermaid_charts(self, markdown_content):
         """
-        Finds Mermaid blocks, renders them as images using a headless browser (Playwright), 
-        and replaces the blocks with image links.
-        Returns the modified markdown and the path to the temporary directory created.
+        Finds Mermaid xychart-beta blocks, renders them as PNG images using matplotlib,
+        and replaces the blocks with image links. Non-xychart-beta blocks (or blocks
+        that fail to parse) are left untouched as code blocks.
+        Returns the modified markdown and the path to the temporary directory created
+        (or None if no chart blocks were found).
         """
-        try:
-            from playwright.sync_api import sync_playwright, Error as PlaywrightError
-        except ImportError:
-            self.log("Aviso: Biblioteca 'playwright' não instalada.", "warning")
-            self.log("Execute 'pip install playwright' e 'playwright install' para habilitar a renderização de gráficos.", "warning")
+        matches = list(chart_renderer.MERMAID_CODE_FENCE_RE.finditer(markdown_content))
+        if not matches:
             return markdown_content, None
 
         temp_dir = tempfile.mkdtemp(prefix="zabbix_audit_charts_")
         modified_markdown = markdown_content
-        
-        mermaid_regex = re.compile(r"```mermaid\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
-        matches = list(mermaid_regex.finditer(modified_markdown))
 
-        if not matches:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return markdown_content, None
-
-        self.log(f"Encontrados {len(matches)} gráficos Mermaid. Renderizando com Playwright...", "info")
-        
-        template_path = os.path.join("templates", "mermaid_template.html")
-        try:
-            with open(template_path, "r", encoding="utf-8") as f:
-                base_html = f.read()
-        except FileNotFoundError:
-            self.log(f"Erro: Arquivo '{template_path}' não encontrado. Abortando renderização.", "danger")
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return markdown_content, None
-
-        chart_font = self.chart_font_var.get()
         chart_type = self.chart_type_var.get()
-        chart_color = self.chart_color_var.get()
-        chart_width = self.chart_width_var.get()
-        chart_height = self.chart_height_var.get()
-        chart_bg_color = self.chart_bg_color_var.get()
-        chart_text_color = self.chart_text_color_var.get()
         ctype_en = "bar" if chart_type == "Barra" else "line"
-        
-        color_map = {"Padrão": "", "Azul": "#3498db", "Vermelho": "#e74c3c", "Verde": "#2ecc71", "Laranja": "#e67e22", "Roxo": "#9b59b6"}
-        bg_color_map = {"Branco": "#ffffff", "Cinza Claro": "#f8f9fa", "Escuro": "#1e1e1e", "Transparente": "transparent"}
-        text_color_map = {"Preto (Padrão)": "#333333", "Branco": "#ffffff", "Cinza": "#7f8c8d"}
-        
-        hex_color = color_map.get(chart_color, "")
-        hex_bg = bg_color_map.get(chart_bg_color, "#ffffff")
-        hex_text = text_color_map.get(chart_text_color, "#333333")
-        
-        theme_vars_list = []
-        if hex_color: theme_vars_list.append(f"plotColorPalette: '{hex_color}'")
-        if hex_bg and hex_bg != "transparent": theme_vars_list.append(f"backgroundColor: '{hex_bg}'")
-        if hex_text:
-            for prop in ['titleColor', 'xAxisLabelColor', 'yAxisLabelColor', 'xAxisTitleColor', 'yAxisTitleColor', 'xAxisLineColor', 'yAxisLineColor', 'xAxisTickColor', 'yAxisTickColor']:
-                theme_vars_list.append(f"{prop}: '{hex_text}'")
-                
-        theme_vars_str = ", ".join(theme_vars_list)
-        theme_vars = f",\n                                themeVariables: {{ xyChart: {{ {theme_vars_str} }} }}" if theme_vars_list else ""
-        
-        extra_style = f"#mermaid-container {{ width: {chart_width}px; height: {chart_height}px; background-color: {hex_bg} !important; padding: 20px; border-radius: 8px; }} #mermaid-container svg {{ width: 100% !important; height: 100% !important; }}"
-        
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                page = browser.new_page(viewport={'width': max(1200, chart_width + 200), 'height': max(800, chart_height + 200)}, device_scale_factor=1.3)
+        style = {
+            "chart_color": self.chart_color_var.get(),
+            "chart_bg_color": self.chart_bg_color_var.get(),
+            "chart_text_color": self.chart_text_color_var.get(),
+            "chart_width": self.chart_width_var.get(),
+            "chart_height": self.chart_height_var.get(),
+            "chart_font": self.chart_font_var.get(),
+        }
 
-                for i, match in enumerate(reversed(matches)):
-                    chart_index = len(matches) - 1 - i
-                    code = match.group(1)
-                    # Corrige alucinações comuns da IA e força a escolha do usuário
-                    code = re.sub(r'^(?:lineChart|barChart)', 'xychart-beta', code, flags=re.MULTILINE)
-                    code = re.sub(r'^\s*data:\s*\[', f'  {ctype_en} [', code, flags=re.MULTILINE)
-                    code = re.sub(r'^\s*(?:line|bar)\s*\[', f'  {ctype_en} [', code, flags=re.MULTILINE)
-                    output_file_path = os.path.join(temp_dir, f"chart_{chart_index}.png")
+        self.log(f"Encontrados {len(matches)} gráficos Mermaid. Renderizando com matplotlib...", "info")
 
-                    xychart_config = f",\n            xyChart: {{ width: {chart_width}, height: {chart_height}, xAxis: {{ showLabel: false }} }}"
-                    html_content = base_html.replace("__EXTRA_STYLE__", extra_style).replace(
-                        "__CODE__", html.escape(code)).replace(
-                        "__FONT__", chart_font).replace(
-                        "__THEME_VARS__", theme_vars).replace(
-                        "__XYCHART_CONFIG__", xychart_config)
+        for i, match in enumerate(reversed(matches)):
+            chart_index = len(matches) - 1 - i
+            code = chart_renderer.normalize_mermaid(match.group(1), ctype_en)
+            chart = chart_renderer.parse_xychart(code)
 
-                    try:
-                        page.set_content(html_content)
-                        page.wait_for_selector('#mermaid-container > svg', timeout=15000)
-                        chart_element = page.locator('#mermaid-container')
-                        
-                        chart_element.screenshot(path=output_file_path)
+            if chart is None:
+                self.log(f"Aviso: bloco Mermaid {chart_index+1} não pôde ser interpretado; mantido como bloco de código.", "warning")
+                continue
 
-                        image_link_path = output_file_path.replace('\\', '/')
-                        image_link = f"![Gráfico Mermaid {chart_index+1}]({image_link_path})"
-                        start, end = match.span()
-                        modified_markdown = modified_markdown[:start] + image_link + modified_markdown[end:]
-                        self.log(f"Gráfico {chart_index+1} renderizado com sucesso.", "info")
+            output_file_path = os.path.join(temp_dir, f"chart_{chart_index}.png")
+            try:
+                chart_renderer.render_chart(chart, style, output_file_path)
+                image_link_path = output_file_path.replace('\\', '/')
+                image_link = f"![Gráfico {chart_index+1}]({image_link_path})"
+                start, end = match.span()
+                modified_markdown = modified_markdown[:start] + image_link + modified_markdown[end:]
+                self.log(f"Gráfico {chart_index+1} renderizado com sucesso.", "info")
+            except Exception as e:
+                self.log(f"Erro ao renderizar gráfico {chart_index+1}: {e}", "danger")
+                continue
 
-                    except Exception as e:
-                        self.log(f"Erro ao renderizar gráfico Mermaid {chart_index+1} com Playwright: {e}", "danger")
-                        continue
-                
-                browser.close()
-        except PlaywrightError:
-            self.log("Erro no Playwright: Navegadores não encontrados.", "danger")
-            self.log("Execute 'playwright install' no seu terminal para baixar os navegadores.", "danger")
-            self.log("A exportação continuará, mas os gráficos aparecerão como blocos de código.", "warning")
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return markdown_content, None
-        
         return modified_markdown, temp_dir
 
     def save_report_clicked(self):
@@ -733,64 +678,47 @@ class MainView(ttk.Window):
                 
                 if to_format == 'pdf':
                     try:
-                        html_body = pypandoc.convert_text(processed_content, 'html', format='gfm+hard_line_breaks')
-                        
-                        author_field = author_name if author_name else "Analista de Monitoramento"
-                        if company_name:
-                            author_field += f" - {company_name}"
-                        current_date = datetime.now().strftime("%d/%m/%Y")
-                        
-                        full_html = f"""
-                        <!DOCTYPE html><html><head><meta charset="UTF-8">
-                        <style>
-                            body {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; }}
-                            h1, h2, h3 {{ color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 30px; }}
-                            a {{ color: #3498db; text-decoration: none; }}
-                            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; page-break-inside: avoid; }}
-                            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-                            th {{ background-color: #f8f9fa; font-weight: bold; }}
-                            .cover-page {{ text-align: center; margin-top: 30%; page-break-after: always; }}
-                            .cover-title {{ font-size: 2.8em; font-weight: bold; margin-bottom: 20px; color: #2c3e50; }}
-                            .cover-author {{ font-size: 1.5em; margin-bottom: 10px; color: #7f8c8d; }}
-                            .cover-date {{ font-size: 1.2em; color: #95a5a6; }}
-                            img {{ max-width: 100%; height: auto; display: block; margin: 15px auto; page-break-inside: avoid; }}
-                            pre {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto; page-break-inside: avoid; border: 1px solid #eee; }}
-                            code {{ font-family: Consolas, monospace; background-color: #f8f9fa; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }}
-                            blockquote {{ border-left: 4px solid #3498db; padding-left: 15px; color: #555; font-style: italic; }}
-                        </style>
-                        </head><body>
-                            <div class="cover-page">
-                                <div class="cover-title">Relatório Técnico de Auditoria Zabbix</div>
-                                <div class="cover-author">{author_field}</div>
-                                <div class="cover-date">{current_date}</div>
-                            </div>
-                            {html_body}
-                        </body></html>
-                        """
-                        
-                        temp_html_path = os.path.join(tempfile.gettempdir(), f"zabbix_report_temp_{uuid.uuid4().hex}.html")
-                        with open(temp_html_path, "w", encoding="utf-8") as f:
-                            f.write(full_html)
-                        
-                        from playwright.sync_api import sync_playwright
-                        with sync_playwright() as p:
-                            browser = p.chromium.launch()
-                            page = browser.new_page()
-                            page.goto(pathlib.Path(temp_html_path).absolute().as_uri())
-                            page.wait_for_load_state('networkidle')
-                            page.pdf(
-                                path=file_path, 
-                                format="A4", 
-                                margin={"top": "2.5cm", "bottom": "2.5cm", "left": "2cm", "right": "2cm"}, 
-                                print_background=True, 
-                                display_header_footer=True, 
-                                footer_template='<div style="font-size: 10px; text-align: center; width: 100%; color: #7f8c8d;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>', 
-                                header_template='<div></div>'
-                            )
-                            browser.close()
-                            
-                        os.remove(temp_html_path)
-                        self.log(f"Relatório exportado com sucesso em: {file_path}")
+                        pandoc_version = pypandoc.get_pandoc_version()
+                        version_tuple = tuple(int(p) for p in pandoc_version.split('.')[:3])
+                        if version_tuple < (3, 1, 7):
+                            self.log(f"Pandoc {pandoc_version} não suporta o writer Typst (requer >= 3.1.7). Baixando versão atualizada...", "warning")
+                            pypandoc.download_pandoc()
+
+                        typst_body = pypandoc.convert_text(processed_content, 'typst', format='gfm+hard_line_breaks')
+
+                        pdf_root_dir = temp_dir_to_clean
+                        created_pdf_root = False
+                        if not pdf_root_dir:
+                            pdf_root_dir = tempfile.mkdtemp(prefix="zabbix_report_typst_")
+                            created_pdf_root = True
+                        else:
+                            temp_dir_norm = pdf_root_dir.replace('\\', '/')
+                            typst_body = typst_body.replace(f'image("{temp_dir_norm}/', 'image("')
+
+                        try:
+                            author_field = author_name if author_name else "Analista de Monitoramento"
+                            if company_name:
+                                author_field += f" - {company_name}"
+                            current_date = datetime.now().strftime("%d/%m/%Y")
+
+                            with open("templates/report_template.typ", "r", encoding="utf-8") as f:
+                                typst_template = f.read()
+
+                            full_typst = typst_template.replace("__TITLE__", "Relatório Técnico de Auditoria Zabbix").replace(
+                                "__AUTHOR__", _escape_typst_text(author_field)).replace(
+                                "__DATE__", current_date).replace(
+                                "__BODY__", typst_body)
+
+                            typst_source_path = os.path.join(pdf_root_dir, "report.typ")
+                            with open(typst_source_path, "w", encoding="utf-8") as f:
+                                f.write(full_typst)
+
+                            import typst
+                            typst.compile(typst_source_path, output=file_path, root=pdf_root_dir)
+                            self.log(f"Relatório exportado com sucesso em: {file_path}")
+                        finally:
+                            if created_pdf_root:
+                                shutil.rmtree(pdf_root_dir, ignore_errors=True)
                     except Exception as e:
                         self.log(f"Erro ao exportar PDF: {e}", "danger")
                 else:

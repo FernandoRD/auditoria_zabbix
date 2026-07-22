@@ -14,7 +14,7 @@ Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura 
 - **Suporte Multi-Versão**: Identifica automaticamente a versão do Zabbix (suporta métodos de autenticação antigos via Payload e novos `>= 6.4` via Header Bearer).
 - **Gráficos Avançados e Customizáveis**: A IA projeta gráficos de tendência usando Mermaid.js. Através da interface, o analista pode personalizar o tipo de gráfico (Linhas ou Barras), cores e fontes, contando com uma **pré-visualização em tempo real**.
 - **Exportação Profissional e Elegante**:
-  - **PDF (.pdf)**: Renderização direta baseada em Chromium via *Playwright*. Gera automaticamente uma Capa de Rosto com os dados do auditor/empresa, paginação inteligente, fontes modernas (Helvetica/Arial) e não depende de LaTeX.
+  - **PDF (.pdf)**: Renderização via *Typst* (compilador nativo, sem dependência de browser/Chromium). Gera automaticamente uma Capa de Rosto com os dados do auditor/empresa, paginação inteligente e não depende de LaTeX nem de instaladores de sistema.
   - **Word (.docx)**: Aplica nativamente a estruturação de um template base customizável.
   - **Outros**: Markdown (.md), Texto Puro (.txt) e OpenDocument (.odt).
 - **Análise de Evidências de SO**: Permite anexar arquivos de log e configurações do Sistema Operacional (ex: `zabbix_server.conf`, uso de disco/memória) para que a IA cruze informações da API com gargalos no SO.
@@ -31,6 +31,7 @@ auditoria_zabbix/
 │   ├── ai_cli_client.py   # Execução sandboxed das CLIs locais (claude/codex/gemini)
 │   └── zabbix_api.py      # Comunicação e métodos da Zabbix API
 ├── core/
+│   ├── chart_renderer.py  # Parsing de xychart-beta + renderização matplotlib
 │   └── controller.py      # Lógica de negócio e orquestração de Threads
 ├── gui/
 │   ├── main_view.py             # Janela principal (ttkbootstrap)
@@ -40,8 +41,8 @@ auditoria_zabbix/
 ├── prompts/
 │   └── report_template.txt # Template injetável do contexto enviado para a IA
 ├── templates/
-│   ├── mermaid_template.html # Template base para renderização vetorial de gráficos
-│   └── report_template.docx  # Documento de referência do Pandoc (se existir)
+│   ├── report_template.docx  # Documento de referência do Pandoc (Word)
+│   └── report_template.typ   # Template Typst (capa, margens, numeração) para PDF
 ├── tests/                 # Testes unitários (unittest, stdlib)
 ├── tools/
 │   └── coleta_zabbix_os.sh # Script de coleta de evidências do SO
@@ -67,11 +68,8 @@ Clone ou baixe este repositório e navegue até a pasta do projeto:
 python -m venv venv
 source venv/bin/activate  # No Windows: venv\Scripts\activate
 
-# Instale as dependências
+# Instale as dependências (inclui matplotlib e typst, sem passos extras de instalação)
 pip install -r requirements.txt
-
-# (Apenas na primeira vez) Instale os navegadores para o Playwright renderizar os gráficos
-playwright install
 ```
 
 ### 3. Configuração de Credenciais

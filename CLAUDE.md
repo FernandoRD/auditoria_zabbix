@@ -12,7 +12,6 @@ A Python desktop GUI app (`ttkbootstrap`/Tkinter) that audits a Zabbix environme
 # Setup
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-playwright install          # required once, for Mermaid chart + PDF rendering
 
 # Run
 python main.py
@@ -43,8 +42,9 @@ Loosely MVC, three layers wired together in `main.py`:
   - `ai_api.py` — `AIClient`: unifies Gemini/OpenAI/Anthropic/Ollama behind one streaming interface. Each account has an `auth_mode`: `"api_key"` (default, uses the provider SDK) or `"cli"` (delegates to `ai_cli_client.py`).
   - `ai_cli_client.py` — runs the provider's official CLI (`claude`/`codex`/`gemini`) as a sandboxed subprocess instead of an API key, for users who want to spend a Claude Pro/Max, ChatGPT Plus/Pro, or Gemini Advanced subscription instead of metered API billing. See "CLI auth mode" below.
 - **`core/controller.py` (Controller)** — `Controller` orchestrates user actions, runs work on background threads to keep the GUI responsive, and drives GUI state (buttons, progress bar).
+- **`core/chart_renderer.py`** — parses the AI-generated `xychart-beta` Mermaid syntax and renders it to PNG via matplotlib (Agg backend, OO API only). Used by both `gui/main_view.py` (report export) and `gui/style_settings_view.py` (style preview).
 - **`prompts/report_template.txt`** — the system prompt: persona, required report structure, formatting rules (e.g. mandatory Mermaid.js usage).
-- **`templates/`** — `mermaid_template.html` (chart rendering shell) and `report_template.docx` (Pandoc reference doc for Word export).
+- **`templates/`** — `report_template.typ` (Typst template: cover page, margins, page numbering, for PDF export) and `report_template.docx` (Pandoc reference doc for Word export).
 
 ### Threading rule (critical)
 
@@ -75,11 +75,10 @@ An alternative to API-key billing: instead of calling a provider SDK, `generate_
 
 ### Chart rendering + export pipeline
 
-1. Regex extracts ```mermaid``` blocks from the generated Markdown.
-2. Playwright (headless Chromium) injects each block into `templates/mermaid_template.html` with the GUI's color/font prefs, waits for SVG render, and screenshots it to PNG in a temp dir.
-3. Markdown mermaid blocks are replaced with image links to those PNGs.
-4. `pypandoc` converts the processed Markdown to the target format. PDF specifically skips LaTeX (avoids a ~1GB dependency): a styled HTML (with a CSS cover page) is built from the Pandoc output and printed to PDF via Playwright.
-5. The `finally` block that `shutil.rmtree()`s the temp chart directory must be preserved — skipping it leaks temp files/inodes.
+1. `core/chart_renderer.py` extracts ```mermaid``` blocks, parses the `xychart-beta` syntax (title/x-axis/y-axis/line|bar), and renders each to PNG via matplotlib (OO API + Agg, never `pyplot`) in a temp dir. Non-`xychart-beta` or unparseable blocks are left as code blocks — export never aborts because of one bad chart.
+2. Markdown mermaid blocks are replaced with image links to those PNGs.
+3. `pypandoc` converts the processed Markdown to the target format. DOCX/ODT consume it directly. PDF converts it to Typst markup instead (`pypandoc.convert_text(..., 'typst', ...)`, needs Pandoc >= 3.1.7), rewrites the chart image paths to be relative to the chart temp dir (Typst resolves relative paths against the referencing `.typ` file's own directory, not the compiler's `root`), wraps it with `templates/report_template.typ` (cover page, margins, page numbering), and compiles straight to PDF via `typst.compile(..., root=<chart temp dir>)` — no browser, no intermediate HTML.
+4. The `finally` block that `shutil.rmtree()`s the temp chart directory must be preserved — skipping it leaks temp files/inodes.
 
 ## Extending
 
@@ -92,3 +91,5 @@ An alternative to API-key billing: instead of calling a provider SDK, `generate_
 - The Docker/Wayland run path (`exec_wayland.fish`) mounts `/tmp/.X11-unix` and forwards `DISPLAY`/`WAYLAND_DISPLAY` because Tkinter needs a display server; there's no headless mode.
 - **`ttkbootstrap` must stay pinned to a 1.x release (currently `1.20.4`).** Version `2.0.0` reorganized the package internals (`ttkbootstrap.scrolled`/`ttkbootstrap.tooltip` moved under `ttkbootstrap.widgets`), which breaks `gui/main_view.py`'s imports at startup (`ModuleNotFoundError`). This actually happened once — don't bump this dependency without verifying `python main.py` still launches.
 - **Never pass `--bare` to `claude` in `ai_cli_client.py`.** That flag explicitly disables reading OAuth/keychain credentials, which breaks the exact subscription-based auth the CLI mode depends on. Reduce CLI overhead via the isolated temp `cwd` instead (no `CLAUDE.md`/project config nearby to auto-discover).
+- **`core/chart_renderer.py` must only use matplotlib's OO API (`Figure` + `FigureCanvasAgg`), never `pyplot`.** Chart rendering runs on background threads (report export, style preview); `pyplot`'s global figure/backend state can collide with Tkinter's main-thread event loop.
+- **PDF export needs Pandoc >= 3.1.7** (Typst writer support) — `_export_report_thread` checks the version and calls `pypandoc.download_pandoc()` if it's older or missing, same fallback already used for a missing Pandoc.
