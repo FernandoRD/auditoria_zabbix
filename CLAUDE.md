@@ -44,7 +44,7 @@ Loosely MVC, three layers wired together in `main.py`:
 - **`core/controller.py` (Controller)** — `Controller` orchestrates user actions, runs work on background threads to keep the GUI responsive, and drives GUI state (buttons, progress bar).
 - **`core/chart_renderer.py`** — parses the AI-generated `xychart-beta` Mermaid syntax and renders it to PNG via matplotlib (Agg backend, OO API only). Used by both `gui/main_view.py` (report export) and `gui/style_settings_view.py` (style preview).
 - **`prompts/report_template.txt`** — the system prompt: persona, required report structure, formatting rules (e.g. mandatory Mermaid.js usage).
-- **`templates/`** — `mermaid_template.html` (chart rendering shell) and `report_template.docx` (Pandoc reference doc for Word export).
+- **`templates/`** — `report_template.typ` (Typst template: cover page, margins, page numbering, for PDF export) and `report_template.docx` (Pandoc reference doc for Word export).
 
 ### Threading rule (critical)
 
