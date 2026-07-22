@@ -39,4 +39,4 @@ xychart-beta
 
 REGRA DE OURO 3: O relatório deverá possuir um índice/sumário
 
-REGRA DE OURO 4: Não resuma demais o relatório, enriqueça-o com elementos visuais, tais como gráficos e fluxogramas.
+REGRA DE OURO 4: Não resuma demais o relatório, enriqueça-o com elementos visuais, tais como gráficos (sempre na sintaxe `xychart-beta` do Mermaid.js, conforme a REGRA DE OURO 2) e tabelas. Não use outros tipos de diagrama Mermaid (flowchart, sequenceDiagram, etc.) — eles não são renderizados pela ferramenta e apareceriam como texto bruto no relatório final.
