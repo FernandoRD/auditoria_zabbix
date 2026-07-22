@@ -12,7 +12,7 @@ Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura 
 - **Inteligência de Cluster (HA Nativo)**: Descobre automaticamente qual é o nó *Active* do servidor em ambientes de Alta Disponibilidade para coletar métricas reais, ignorando nós *Standby*.
 - **Análise de Saúde Interna (Zabbix Health)**: Extrai o histórico recente de processos internos críticos (pollers, history syncers, caches, queue).
 - **Suporte Multi-Versão**: Identifica automaticamente a versão do Zabbix (suporta métodos de autenticação antigos via Payload e novos `>= 6.4` via Header Bearer).
-- **Gráficos Avançados e Customizáveis**: A IA projeta gráficos de tendência usando Mermaid.js. Através da interface, o analista pode personalizar o tipo de gráfico (Linhas ou Barras), cores e fontes, contando com uma **pré-visualização em tempo real**.
+- **Gráficos Avançados e Customizáveis**: A IA projeta gráficos de tendência na sintaxe `xychart-beta` do Mermaid.js, renderizados nativamente via *matplotlib* (sem dependência de browser). Através da interface, o analista pode personalizar o tipo de gráfico (Linhas ou Barras), cores e fontes, contando com uma **pré-visualização em tempo real**.
 - **Exportação Profissional e Elegante**:
   - **PDF (.pdf)**: Renderização via *Typst* (compilador nativo, sem dependência de browser/Chromium). Gera automaticamente uma Capa de Rosto com os dados do auditor/empresa, paginação inteligente e não depende de LaTeX nem de instaladores de sistema.
   - **Word (.docx)**: Aplica nativamente a estruturação de um template base customizável.
