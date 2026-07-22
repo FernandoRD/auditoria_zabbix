@@ -5,7 +5,6 @@ import threading
 import os
 import shutil
 import tempfile
-import html
 
 from core.chart_renderer import parse_xychart, render_chart
 
