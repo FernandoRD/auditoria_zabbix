@@ -7,6 +7,8 @@ import shutil
 import tempfile
 import html
 
+from core.chart_renderer import parse_xychart, render_chart
+
 class StyleSettingsWindow(ttk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -118,7 +120,7 @@ class StyleSettingsWindow(ttk.Toplevel):
         ttk.Button(btn_frame, text="Cancelar", bootstyle="secondary", command=self.destroy).pack(side=RIGHT, padx=5)
 
     def update_preview(self):
-        self.preview_label.configure(text="Gerando prévia com Playwright... Aguarde.", image='')
+        self.preview_label.configure(text="Gerando prévia... Aguarde.", image='')
         font = self.font_var.get()
         chart_type = self.type_var.get()
         chart_color = self.color_var.get()
@@ -140,61 +142,32 @@ class StyleSettingsWindow(ttk.Toplevel):
         thread.start()
 
     def _render_preview_thread(self, font, chart_type, chart_color, chart_width, chart_height, chart_bg_color, chart_text_color):
-        template_path = os.path.join("templates", "mermaid_template.html")
-        try:
-            with open(template_path, "r", encoding="utf-8") as f:
-                base_html = f.read()
-        except FileNotFoundError:
-            self.after(0, lambda: self.preview_label.configure(text=f"Erro: '{template_path}' não encontrado.", image=''))
-            return
+        ctype_en = "bar" if chart_type == "Barra" else "line"
+        code = (
+            'xychart-beta\n'
+            '  title "Exemplo de Desempenho"\n'
+            '  x-axis ["1h", "45m", "30m", "15m", "Agora"]\n'
+            '  y-axis "Uso de Cache (%)" 0 --> 100\n'
+            f'  {ctype_en} [20, 35, 30, 60, 45]'
+        )
+        chart = parse_xychart(code)
+
+        style = {
+            "chart_color": chart_color,
+            "chart_bg_color": chart_bg_color,
+            "chart_text_color": chart_text_color,
+            "chart_width": chart_width,
+            "chart_height": chart_height,
+            "chart_font": font,
+        }
+
+        if not self.temp_preview_dir:
+            self.temp_preview_dir = tempfile.mkdtemp(prefix="zabbix_preview_")
+        output_path = os.path.join(self.temp_preview_dir, "preview.png")
 
         try:
-            from playwright.sync_api import sync_playwright
-            
-            ctype_en = "bar" if chart_type == "Barra" else "line"
-            code = f"xychart-beta\n  title \"Exemplo de Desempenho\"\n  x-axis [\"1h\", \"45m\", \"30m\", \"15m\", \"Agora\"]\n  y-axis \"Uso de Cache (%)\" 0 --> 100\n  {ctype_en} [20, 35, 30, 60, 45]"
-            
-            bg_color_map = {"Branco": "#ffffff", "Cinza Claro": "#f8f9fa", "Escuro": "#1e1e1e", "Transparente": "transparent"}
-            text_color_map = {"Preto (Padrão)": "#333333", "Branco": "#ffffff", "Cinza": "#7f8c8d"}
-            color_map = {"Padrão": "", "Azul": "#3498db", "Vermelho": "#e74c3c", "Verde": "#2ecc71", "Laranja": "#e67e22", "Roxo": "#9b59b6"}
-            
-            hex_color = color_map.get(chart_color, "")
-            hex_bg = bg_color_map.get(chart_bg_color, "#ffffff")
-            hex_text = text_color_map.get(chart_text_color, "#333333")
-            
-            theme_vars_list = []
-            if hex_color: theme_vars_list.append(f"plotColorPalette: '{hex_color}'")
-            if hex_bg and hex_bg != "transparent": theme_vars_list.append(f"backgroundColor: '{hex_bg}'")
-            if hex_text:
-                for prop in ['titleColor', 'xAxisLabelColor', 'yAxisLabelColor', 'xAxisTitleColor', 'yAxisTitleColor', 'xAxisLineColor', 'yAxisLineColor', 'xAxisTickColor', 'yAxisTickColor']:
-                    theme_vars_list.append(f"{prop}: '{hex_text}'")
-                    
-            theme_vars_str = ", ".join(theme_vars_list)
-            theme_vars = f",\n                            themeVariables: {{ xyChart: {{ {theme_vars_str} }} }}" if theme_vars_list else ""
-            
-            with sync_playwright() as p:
-                browser = p.chromium.launch()
-                page = browser.new_page(viewport={'width': max(1200, chart_width + 200), 'height': max(800, chart_height + 200)}, device_scale_factor=1.3)
-                
-                xychart_config = f",\n            xyChart: {{ width: {chart_width}, height: {chart_height}, xAxis: {{ showLabel: false }} }}"
-                extra_style = f"#mermaid-container {{ width: {chart_width}px; height: {chart_height}px; background-color: {hex_bg} !important; padding: 20px; border-radius: 8px; }} #mermaid-container svg {{ width: 100% !important; height: 100% !important; }}"
-                html_content = base_html.replace("__EXTRA_STYLE__", extra_style).replace(
-                    "__CODE__", html.escape(code)).replace(
-                    "__FONT__", font).replace(
-                    "__THEME_VARS__", theme_vars).replace(
-                    "__XYCHART_CONFIG__", xychart_config)
-                
-                if not self.temp_preview_dir:
-                    self.temp_preview_dir = tempfile.mkdtemp(prefix="zabbix_preview_")
-                output_path = os.path.join(self.temp_preview_dir, "preview.png")
-                
-                page.set_content(html_content)
-                page.wait_for_selector('#mermaid-container > svg', timeout=15000)
-                chart_element = page.locator('#mermaid-container')
-                chart_element.screenshot(path=output_path)
-                browser.close()
-                
-                self.after(0, self._apply_preview_image, output_path)
+            render_chart(chart, style, output_path)
+            self.after(0, self._apply_preview_image, output_path)
         except Exception as e:
             self.after(0, lambda err=e: self.preview_label.configure(text=f"Erro na prévia:\n{err}", image=''))
 
