@@ -19,10 +19,12 @@ A aplicação segue uma arquitetura orientada a componentes, vagamente baseada n
   - `ai_cli_client.py`: Funções puras de montagem de comando (`build_cli_command`, `build_cli_input_text`, `extract_cli_json_text`, `cli_binary_status`) e o orquestrador `generate_via_cli()`, que roda `claude`/`codex`/`gemini` como subprocesso sandboxed. Ver seção 4.1.
 - **`/core` (Controller)**:
   - `controller.py`: Classe `Controller`. Orquestra as ações do usuário. Gerencia as *Threads* (para evitar o congelamento da interface gráfica) e controla o estado da GUI (habilitar/desabilitar botões, atualizar barra de progresso).
+  - `chart_renderer.py`: Parsing puro da sintaxe `xychart-beta` do Mermaid.js e renderização em PNG via matplotlib (Agg). Ver seção 5.
 - **`/prompts`**:
-  - `report_template.txt`: O *System Prompt* central. Define a persona, a estrutura de tópicos exigida e as regras de formatação (ex: obrigatoriedade do uso de Mermaid.js).
+  - `report_template.txt`: O *System Prompt* central. Define a persona, a estrutura de tópicos exigida e as regras de formatação (ex: obrigatoriedade do uso de Mermaid.js `xychart-beta`).
 - **`/templates`**:
-  - HTMLs e DOCXs base usados pelos motores de renderização para padronizar a identidade visual de saída.
+  - `report_template.docx`: documento de referência do Pandoc para exportação Word.
+  - `report_template.typ`: template Typst (capa, margens, numeração) para exportação PDF.
 - **`/tests`**:
   - Testes unitários (`unittest`, stdlib — sem dependência de teste adicional) para `ai_cli_client.py`, o modo CLI de `ai_api.py` e o wiring de `auth_mode` em `controller.py`. Rodar com `python3 -m unittest discover -s tests -v`.
 
@@ -61,17 +63,19 @@ Alternativa ao SDK: quando a conta tem `auth_mode == "cli"`, `AIClient.generate_
 * **Extração da resposta:** `claude`/`gemini` usam `--output-format json`; `extract_cli_json_text` tenta as chaves `result`/`response`/`text`/`content` e cai para o stdout bruto se o schema não bater (defensivo — os schemas dessas CLIs não são um contrato público estável). `codex` grava a última mensagem direto em arquivo via `-o` (`--output-last-message`), sem necessidade de parsing.
 * **Sem streaming na v1:** todas as três variantes fazem `yield` do texto completo de uma vez (sem incrementalidade) — os schemas de evento `stream-json` de `codex`/`gemini` não foram validados contra chamadas reais.
 
-### 5. Renderização de Gráficos e Exportação (O Motor Playwright + Pandoc)
-A IA gera gráficos escrevendo blocos de código vetoriais na linguagem `mermaid`. No entanto, visualizadores offline (PDF/Word) não sabem interpretar blocos *Mermaid*.
-* **O Fluxo de Renderização (`_render_mermaid_charts`)**:
-  1. Uma expressão regular (`regex`) varre o Markdown extraindo blocos ```mermaid.
-  2. O `Playwright` (Navegador Headless Chromium) é instanciado.
-  3. O código Mermaid é injetado no arquivo `templates/mermaid_template.html` junto com as preferências de cor/fonte definidas na GUI.
-  4. O navegador abre a página, aguarda a injeção SVG (via DOM localizador) e tira um *Screenshot* PNG em um diretório temporário (`/tmp`).
-  5. O bloco de texto markdown do Mermaid é substituído localmente por uma tag de imagem `!Grafico`.
+### 5. Renderização de Gráficos e Exportação (`core/chart_renderer.py` + Typst)
+
+A IA gera gráficos escrevendo blocos de código na sintaxe `xychart-beta` do Mermaid.js dentro de blocos ```` ```mermaid ````. Em vez de interpretar essa sintaxe via um motor JS real (o que exigiria um browser), o app faz o parsing dela diretamente em Python.
+
+* **O Fluxo de Renderização (`_render_mermaid_charts` → `core/chart_renderer.py`)**:
+  1. `chart_renderer.MERMAID_CODE_FENCE_RE` varre o Markdown extraindo blocos ```` ```mermaid ````.
+  2. `normalize_mermaid()` corrige alucinações comuns da IA (`lineChart`/`barChart` → `xychart-beta`, `data: [` → `line [`/`bar [`) e força o tipo de série escolhido pelo usuário na GUI.
+  3. `parse_xychart()` extrai título, rótulos do eixo X, rótulo/faixa do eixo Y e as séries de valores. Retorna `None` se o bloco não for um `xychart-beta` parseável (ex.: a IA gerou um flowchart, ignorando a REGRA DE OURO 4 do prompt) — nesse caso o bloco permanece como código no documento final, sem abortar a exportação.
+  4. `render_chart()` desenha o gráfico com a **API orientada a objetos do matplotlib** (`Figure` + `FigureCanvasAgg`, nunca `pyplot`) e salva um PNG.
+  5. O bloco de texto markdown do Mermaid é substituído localmente por uma tag de imagem `![Gráfico N](caminho/absoluto/chart_N.png)`.
 * **A Geração Final (`_export_report_thread`)**:
-  * O Markdown manipulado (agora com links para imagens PNG reais) é passado para a biblioteca `pypandoc`.
-  * No caso do **PDF**, a aplicação não usa LaTeX (para evitar dependências de 1GB). Ela cria um HTML elegante combinando o conteúdo processado pelo Pandoc, gera uma página de Rosto (Capa) com CSS puro, e utiliza o Playwright novamente para imprimir esse HTML diretamente em `.pdf`.
+  * Para **Word (.docx)** e **OpenDocument (.odt)**, o Markdown manipulado (com links para os PNGs) é passado direto para `pypandoc`, sem etapa extra.
+  * Para **PDF**, o Markdown é convertido para markup **Typst** via `pypandoc.convert_text(..., 'typst', ...)` (requer Pandoc ≥ 3.1.7 — checado e baixado via `pypandoc.download_pandoc()` se necessário). Os caminhos de imagem, absolutos no Markdown, são reescritos para relativos ao diretório dos gráficos (caminhos em `.typ` são resolvidos relativos ao próprio arquivo `.typ`, não ao `root` do compilador). O corpo Typst é combinado com `templates/report_template.typ` (capa, margens, numeração de página) e compilado direto para PDF via `typst.compile(..., root=<diretório dos PNGs>)` — sem HTML intermediário, sem browser.
 
 ---
 
@@ -102,3 +106,4 @@ O arquivo de script em bash/fish `exec_wayland.sh` mapeia os soquetes `/tmp/.X11
 - **Mudanças no google-genai:** A API oficial do Gemini mudou em 2025 (`google-generativeai` descontinuado para `google-genai`). Mantenha os `requirements.txt` atualizados utilizando os objetos `Client` e `types.GenerateContentConfig` implementados atualmente na `ai_api.py`.
 - **Limpeza de Temp:** O gerador Mermaid cria instâncias e imagens temporárias. O bloco `finally` dentro da exportação deve ser mantido para garantir `shutil.rmtree()` e evitar esgotamento de disco no SO (inodes).
 - **Nunca use `claude --bare` em `ai_cli_client.py`:** essa flag desativa explicitamente a leitura de OAuth/keychain ("Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper... OAuth and keychain are never read") — quebraria exatamente a autenticação via assinatura que o modo CLI local depende. Reduções de overhead da CLI devem vir do `cwd` isolado (diretório temp sem `CLAUDE.md`/config de projeto por perto), não dessa flag.
+- **Nunca importe `matplotlib.pyplot` em `chart_renderer.py`:** a renderização de gráficos roda em threads de background (tanto na exportação de relatório quanto na prévia de estilos); `pyplot` mantém estado global de figuras/backend que pode colidir com o event loop do Tkinter na main thread. Use sempre `matplotlib.figure.Figure` + `matplotlib.backends.backend_agg.FigureCanvasAgg` diretamente.
