@@ -1,3 +1,8 @@
+// Helper que o writer Typst do pandoc emite para "---" do Markdown (#horizontalrule).
+// O template padrão do pandoc o define; como este template é customizado, precisamos
+// defini-lo aqui — sem isso, qualquer relatório com linha horizontal falha ao compilar.
+#let horizontalrule = line(length: 100%, stroke: 0.5pt + gray)
+
 #set page(
   paper: "a4",
   margin: (top: 2.5cm, bottom: 2.5cm, left: 2cm, right: 2cm),
