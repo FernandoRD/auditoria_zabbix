@@ -53,6 +53,16 @@ A API do Zabbix pode retornar milhões de linhas. Enviar isso para uma IA causar
 * O `ai_api.py` empacota isso no `report_template.txt`.
 * **Stream Mode:** O SDK da IA correspondente é chamado com `stream=True`. O `yield` do Python retorna os pedaços (*chunks*) do texto assim que chegam. O método `append_report_chunk` da GUI usa o `self.after(0, ...)` do Tkinter para desenhar essas letras na interface em tempo real de forma thread-safe.
 
+### 3.1. Coleta sem IA (`Controller.start_collection_only` / `run_collection_only_flow`)
+
+Botão **"📥 Apenas Coleta"** na `control_frame` de `main_view.py`, ao lado de "🔄 Regerar (Apenas IA)". Existe para quem quer só extrair e arquivar os dados do Zabbix (ou revisar a coleta) sem gastar tokens/chamar a IA.
+
+* **`collect_only_clicked` (GUI):** valida que a URL do Zabbix foi preenchida, abre `filedialog.asksaveasfilename` para o usuário escolher onde salvar o JSON (lembra o último diretório em `settings["last_collect_dir"]`), e chama `controller.start_collection_only(file_path)`.
+* **`Controller.start_collection_only(file_path)`:** limpa o `cancel_event`, desabilita a UI e roda `run_collection_only_flow` em uma thread daemon — mesmo padrão de `start_audit`.
+* **`Controller.run_collection_only_flow(file_path)`:** valida URL/credenciais do Zabbix, chama `_collect_zabbix_data(...)` e grava o resultado em `file_path` (JSON com `indent=2`, para leitura humana — diferente do cache interno, que é compacto). Não instancia `AIClient` nem troca de aba.
+* **`Controller._collect_zabbix_data(...)`:** helper privado extraído de `run_audit_flow` — conecta, autentica, chama `zabbix.collect_data()`, anonimiza se `anonimizar` estiver ativo e grava `last_audit_cache.json`. É compartilhado pelos dois fluxos (`run_audit_flow` quando `use_cache=False`, e `run_collection_only_flow`), então qualquer mudança na lógica de coleta/anonimização vale para ambos automaticamente.
+* **`Controller._validate_zabbix_credentials(...)`:** helper privado com a validação de token/usuário-senha, também compartilhado pelos dois fluxos.
+
 ### 4.1. Modo CLI local dos provedores de IA (`api/ai_cli_client.py`)
 
 Alternativa ao SDK: quando a conta tem `auth_mode == "cli"`, `AIClient.generate_audit_report()` não chama nenhum SDK — delega para `ai_cli_client.generate_via_cli(provider, prompt, model_override)`, que roda o binário da CLI oficial do provedor (`claude`/`codex`/`gemini`) como subprocesso.

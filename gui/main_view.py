@@ -270,6 +270,14 @@ class MainView(ttk.Window):
         )
         self.regerar_button.pack(side=LEFT, padx=(0, 5))
 
+        self.coletar_button = ttk.Button(
+            control_frame,
+            text="📥 Apenas Coleta",
+            command=self.collect_only_clicked,
+            bootstyle="secondary"
+        )
+        self.coletar_button.pack(side=LEFT, padx=(0, 10))
+
         self.cancel_button = ttk.Button(
             control_frame,
             text="⏹ Cancelar",
@@ -745,7 +753,30 @@ class MainView(ttk.Window):
         self.save_settings()
         if self.controller:
             self.controller.start_audit(use_cache=True)
-            
+
+    def collect_only_clicked(self):
+        z_url = self.zabbix_url_var.get().strip()
+        if not z_url:
+            self.show_dialog("Configuração Incompleta", "Preencha a URL do Zabbix na aba 'Configurações' antes de coletar.", is_error=True)
+            return
+
+        initial_dir = self.settings.get("last_collect_dir", os.path.expanduser("~"))
+        file_path = filedialog.asksaveasfilename(
+            title="Salvar Coleta de Dados",
+            initialdir=initial_dir,
+            initialfile="coleta_zabbix.json",
+            defaultextension=".json",
+            filetypes=[("Arquivos JSON", "*.json"), ("Todos os arquivos", "*.*")]
+        )
+        if not file_path:
+            return
+
+        self.settings["last_collect_dir"] = os.path.dirname(file_path)
+        self.save_settings()
+
+        if self.controller:
+            self.controller.start_collection_only(file_path)
+
     def cancel_audit_clicked(self):
         if self.controller:
             self.controller.cancel_audit()
@@ -793,5 +824,6 @@ class MainView(ttk.Window):
     def set_ui_state(self, state):
         self.start_button.configure(state=state)
         if hasattr(self, 'regerar_button'): self.regerar_button.configure(state=state)
+        if hasattr(self, 'coletar_button'): self.coletar_button.configure(state=state)
         if hasattr(self, 'test_zabbix_button'): self.test_zabbix_button.configure(state=state)
         if hasattr(self, 'cancel_button'): self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")

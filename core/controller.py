@@ -101,10 +101,109 @@ class Controller:
         self.view.set_ui_state('disabled')
         self.view.notebook.select(1) # Transição mágica para a aba "Logs"
         self.view.log("Iniciando auditoria (Usando Cache)..." if use_cache else "Iniciando auditoria (Nova Coleta)...")
-        
+
         audit_thread = threading.Thread(target=self.run_audit_flow, args=(use_cache,))
         audit_thread.daemon = True
         audit_thread.start()
+
+    def start_collection_only(self, file_path):
+        """Inicia apenas a coleta de dados do Zabbix (sem IA) em uma nova thread, salvando o resultado em file_path."""
+        self.cancel_event.clear()
+        self.view.set_ui_state('disabled')
+        self.view.notebook.select(1) # Transição mágica para a aba "Logs"
+        self.view.log("Iniciando coleta de dados do Zabbix (sem IA)...")
+
+        thread = threading.Thread(target=self.run_collection_only_flow, args=(file_path,))
+        thread.daemon = True
+        thread.start()
+
+    def _validate_zabbix_credentials(self, auth_method, z_token, z_user, z_pass):
+        """Retorna uma mensagem de erro se as credenciais do Zabbix estiverem incompletas, ou None se válidas."""
+        if auth_method == "token" and not z_token:
+            return "ERRO: Informe o API Token do Zabbix."
+        if auth_method == "user_pass" and not all([z_user, z_pass]):
+            return "ERRO: Informe Usuário e Senha do Zabbix."
+        return None
+
+    def _collect_zabbix_data(self, z_url, auth_method, z_user, z_pass, z_token, verify_ssl, anonymize,
+                              history_limit, sample_limit, template_limit, only_used_templates):
+        """Conecta ao Zabbix, coleta os dados, anonimiza se necessário e salva o cache local. Retorna os dados coletados."""
+        self.view.update_progress(10, "Conectando ao Zabbix...")
+        logger = lambda msg: self.view.log(msg, "warning")
+        if auth_method == "token":
+            zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl, logger=logger)
+        else:
+            zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl, logger=logger)
+
+        self.view.log(f"Conectando ao Zabbix em {z_url}...")
+        version = zabbix.discover_version()
+        if version:
+            self.view.log(f"Versão do Zabbix detectada: {version}")
+
+        self.view.update_progress(20, "Autenticando no Zabbix...")
+        zabbix.authenticate()
+
+        if self.cancel_event.is_set(): return None
+        self.view.update_progress(30, "Coletando dados da API (Pode demorar)...")
+        self.view.log("Iniciando varredura profunda no Zabbix...")
+        zabbix_data = zabbix.collect_data(history_limit=history_limit, sample_limit=sample_limit, template_limit=template_limit, only_used_templates=only_used_templates)
+
+        if anonymize:
+            self.view.log("Anonimizando dados sensíveis (IPs e Senhas) da coleta...")
+            zabbix_data_str = json.dumps(zabbix_data, ensure_ascii=False)
+            zabbix_data_str = self._anonymize_text(zabbix_data_str)
+            zabbix_data = json.loads(zabbix_data_str)
+
+        self.view.log("Coleta de dados concluída com sucesso.")
+
+        try:
+            with open("last_audit_cache.json", "w", encoding="utf-8") as f:
+                json.dump(zabbix_data, f, ensure_ascii=False)
+        except Exception as e:
+            self.view.log(f"Aviso: Não foi possível salvar o cache local da auditoria: {e}", "warning")
+
+        return zabbix_data
+
+    def run_collection_only_flow(self, file_path):
+        z_url = self.view.zabbix_url_var.get().strip()
+        auth_method = self.view.zabbix_auth_method_var.get()
+        z_user = self.view.zabbix_user_var.get().strip()
+        z_pass = self.view.zabbix_pass_var.get().strip()
+        z_token = self.view.zabbix_token_var.get().strip()
+        verify_ssl = not self.view.zabbix_ignore_ssl_var.get()
+        anonymize = self.view.anonymize_data_var.get()
+        history_limit = self.view.history_limit_var.get()
+        sample_limit = self.view.sample_limit_var.get()
+        template_limit = self.view.template_limit_var.get()
+        only_used_templates = self.view.only_used_templates_var.get()
+
+        if not z_url:
+            self.view.log("ERRO: Preencha a URL do Zabbix na aba 'Configurações' antes de iniciar.", "danger")
+            self.view.set_ui_state('normal')
+            return
+
+        credentials_error = self._validate_zabbix_credentials(auth_method, z_token, z_user, z_pass)
+        if credentials_error:
+            self.view.log(credentials_error, "danger")
+            self.view.set_ui_state('normal')
+            return
+
+        try:
+            zabbix_data = self._collect_zabbix_data(
+                z_url, auth_method, z_user, z_pass, z_token, verify_ssl, anonymize,
+                history_limit, sample_limit, template_limit, only_used_templates
+            )
+            if self.cancel_event.is_set(): return
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(zabbix_data, f, ensure_ascii=False, indent=2)
+            self.view.log(f"Dados da coleta salvos com sucesso em: {file_path}")
+            self.view.update_progress(100, "Coleta Concluída!")
+        except Exception as e:
+            self.view.log(f"Erro durante a coleta de dados: {e}", "danger")
+            self.view.update_progress(0, "Falha na Coleta")
+        finally:
+            self.view.set_ui_state('normal')
 
     def run_audit_flow(self, use_cache):
         z_url = self.view.zabbix_url_var.get().strip()
@@ -130,52 +229,20 @@ class Controller:
             self.view.set_ui_state('normal')
             return
 
-        if auth_method == "token" and not z_token:
-            self.view.log("ERRO: Informe o API Token do Zabbix.", "danger")
-            self.view.set_ui_state('normal')
-            return
-            
-        if auth_method == "user_pass" and not all([z_user, z_pass]):
-            self.view.log("ERRO: Informe Usuário e Senha do Zabbix.", "danger")
+        credentials_error = self._validate_zabbix_credentials(auth_method, z_token, z_user, z_pass)
+        if credentials_error:
+            self.view.log(credentials_error, "danger")
             self.view.set_ui_state('normal')
             return
 
         try:
             zabbix_data = {}
             if not use_cache:
-                self.view.update_progress(10, "Conectando ao Zabbix...")
-                logger = lambda msg: self.view.log(msg, "warning")
-                if auth_method == "token":
-                    zabbix = zabbix_api.ZabbixClient(z_url, token=z_token, verify_ssl=verify_ssl, logger=logger)
-                else:
-                    zabbix = zabbix_api.ZabbixClient(z_url, user=z_user, password=z_pass, verify_ssl=verify_ssl, logger=logger)
-                    
-                self.view.log(f"Conectando ao Zabbix em {z_url}...")
-                version = zabbix.discover_version()
-                if version:
-                    self.view.log(f"Versão do Zabbix detectada: {version}")
-    
-                self.view.update_progress(20, "Autenticando no Zabbix...")
-                zabbix.authenticate()
-    
+                zabbix_data = self._collect_zabbix_data(
+                    z_url, auth_method, z_user, z_pass, z_token, verify_ssl, anonymize,
+                    history_limit, sample_limit, template_limit, only_used_templates
+                )
                 if self.cancel_event.is_set(): return
-                self.view.update_progress(30, "Coletando dados da API (Pode demorar)...")
-                self.view.log("Iniciando varredura profunda no Zabbix...")
-                zabbix_data = zabbix.collect_data(history_limit=history_limit, sample_limit=sample_limit, template_limit=template_limit, only_used_templates=only_used_templates)
-                
-                if anonymize:
-                    self.view.log("Anonimizando dados sensíveis (IPs e Senhas) da coleta...")
-                    zabbix_data_str = json.dumps(zabbix_data, ensure_ascii=False)
-                    zabbix_data_str = self._anonymize_text(zabbix_data_str)
-                    zabbix_data = json.loads(zabbix_data_str)
-
-                self.view.log("Coleta de dados concluída com sucesso.")
-                
-                try:
-                    with open("last_audit_cache.json", "w", encoding="utf-8") as f:
-                        json.dump(zabbix_data, f, ensure_ascii=False)
-                except Exception as e:
-                    self.view.log(f"Aviso: Não foi possível salvar o cache local da auditoria: {e}", "warning")
             else:
                 self.view.update_progress(30, "Carregando dados do cache local...")
                 try:

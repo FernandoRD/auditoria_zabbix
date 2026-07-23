@@ -9,6 +9,7 @@ Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura 
 - **Suporte Multi-IA**: Compatível com provedores líderes de mercado (**Google Gemini**, **OpenAI**, **Anthropic Claude**) e suporte a execução de LLMs locais via **Ollama** para ambientes restritos ou isolados.
 - **Autenticação via CLI local (assinatura)**: Além de API key, cada conta Anthropic/OpenAI/Google Gemini pode usar a CLI oficial já instalada e autenticada na máquina (`claude`, `codex`, `gemini`) em vez de cobrança por token — útil para quem já tem Claude Pro/Max, ChatGPT Plus/Pro ou Gemini Advanced. A aplicação chama a CLI em modo headless/somente-leitura (sem acesso a arquivos ou shell), nunca lê ou manipula o token OAuth diretamente. Veja "Modo CLI local" abaixo.
 - **Extração Automatizada via Zabbix API**: Coleta dados de Hosts, Itens (identificando polling agressivo e scripts externos), Templates e Proxies.
+- **Coleta sem IA ("📥 Apenas Coleta")**: Executa somente a extração de dados do Zabbix e salva o JSON coletado onde você escolher, sem enviar nada para a IA — útil para arquivar evidências, revisar a coleta antes de gastar tokens, ou rodar a coleta em um ambiente e gerar o relatório em outro.
 - **Inteligência de Cluster (HA Nativo)**: Descobre automaticamente qual é o nó *Active* do servidor em ambientes de Alta Disponibilidade para coletar métricas reais, ignorando nós *Standby*.
 - **Análise de Saúde Interna (Zabbix Health)**: Extrai o histórico recente de processos internos críticos (pollers, history syncers, caches, queue).
 - **Suporte Multi-Versão**: Identifica automaticamente a versão do Zabbix (suporta métodos de autenticação antigos via Payload e novos `>= 6.4` via Header Bearer).
@@ -46,8 +47,12 @@ auditoria_zabbix/
 ├── tests/                 # Testes unitários (unittest, stdlib)
 ├── tools/
 │   └── coleta_zabbix_os.sh # Script de coleta de evidências do SO
+├── whl/                   # .whl de anthropic/openai para instalação offline
+├── .github/workflows/
+│   └── release.yml        # Pipeline de release (build PyInstaller Windows/Linux)
 ├── .env.example           # Exemplo de arquivo de credenciais
 ├── main.py                # Ponto de entrada da aplicação
+├── pyinstaller.spec       # Configuração de build do executável standalone
 └── requirements.txt       # Dependências do projeto (versões fixadas)
 ```
 
@@ -80,6 +85,8 @@ source venv/bin/activate  # No Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+> **Rede corporativa bloqueando o PyPI?** A pasta `whl/` traz os `.whl` de `anthropic` e `openai` prontos para instalação offline (`pip install whl/anthropic-*.whl whl/openai-*.whl`), para ambientes onde o índice público está bloqueado.
+
 ### 3. Configuração de Credenciais
 Crie um arquivo chamado `.env` na raiz do projeto (use o `.env.example` como base) e preencha suas informações:
 
@@ -100,8 +107,9 @@ GEMINI_API_KEY="SUA_CHAVE_DO_GOOGLE_GEMINI"
    ```
 2. **(Opcional) Evidências de SO**: Se você tiver acesso ao servidor Linux onde o Zabbix está hospedado, execute o script `coleta_zabbix_os.sh` fornecido junto com a ferramenta. Ele gerará um arquivo `.txt`. Clique no botão **"📎 Anexar Evidências OS"** na interface para carregar este arquivo.
 3. Selecione a conta/provedor de IA e o modelo desejado (a lista de modelos é buscada dinamicamente ao validar a conexão, exceto em modo CLI local).
-4. Clique em **"Iniciar Auditoria"**.
+4. Clique em **"▶ Iniciar Auditoria"**.
 5. Acompanhe o progresso na aba "Logs da Execução". Assim que finalizado, o relatório em Markdown estará disponível na aba "Relatório Final" e será salvo automaticamente na pasta do projeto como `relatorio_auditoria_zabbix.md`.
+6. Para reaproveitar a última coleta e gerar outro relatório sem consultar o Zabbix de novo, use **"🔄 Regerar (Apenas IA)"**. Para apenas coletar os dados do Zabbix e salvá-los em um arquivo `.json` à sua escolha — sem chamar a IA — use **"📥 Apenas Coleta"**.
 
 ---
 
