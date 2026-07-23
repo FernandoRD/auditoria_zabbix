@@ -8,6 +8,7 @@ import requests
 from datetime import datetime
 
 from api import ai_cli_client
+from core.paths import resource_path
 
 class AIClient:
     def __init__(self, provider, api_key, auth_mode="api_key", cli_model_override=None):
@@ -71,7 +72,7 @@ class AIClient:
         custom_instructions_section = f"\n\nInstruções Adicionais do Analista:\n{custom_instructions}\n" if custom_instructions else ""
 
         try:
-            prompt_template_path = os.path.join('prompts', 'report_template.txt')
+            prompt_template_path = resource_path(os.path.join('prompts', 'report_template.txt'))
             with open(prompt_template_path, 'r', encoding='utf-8') as f:
                 prompt_template = f.read()
             

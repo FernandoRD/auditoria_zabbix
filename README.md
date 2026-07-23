@@ -55,6 +55,14 @@ auditoria_zabbix/
 
 ## 🚀 Como Instalar e Configurar
 
+### Opção rápida: executável pronto (Windows/Linux)
+
+Cada [Release](../../releases) publicada nesta página traz executáveis prontos para Windows (`.zip`) e Linux (`.tar.gz`), gerados automaticamente pelo GitHub Actions a partir da tag correspondente — não requer Python instalado. Baixe o pacote da sua plataforma, extraia e rode `AuditoriaZabbix.exe` (Windows) ou `./AuditoriaZabbix` (Linux).
+
+Para gerar uma nova release: `git tag vX.Y.Z && git push origin vX.Y.Z` — o workflow em `.github/workflows/release.yml` builda os dois executáveis via PyInstaller e publica a Release automaticamente.
+
+### Instalação a partir do código-fonte
+
 ### 1. Pré-requisitos
 - Python 3.8+ instalado.
 - Acesso à API de um servidor Zabbix (URL, Usuário e Senha).

@@ -17,3 +17,7 @@ __pycache__/
 
 # Virtual env
 venv
+
+# Artefatos de build do PyInstaller
+build/
+dist/

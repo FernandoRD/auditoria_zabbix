@@ -18,6 +18,7 @@ from gui.manage_accounts_view import ManageAccountsWindow
 from gui.style_settings_view import StyleSettingsWindow
 from gui.manage_attachments_view import ManageAttachmentsWindow
 from api.ai_cli_client import cli_binary_status
+from core.paths import resource_path
 from core import chart_renderer
 
 def _escape_typst_text(text):
@@ -671,7 +672,7 @@ class MainView(ttk.Window):
                 extra_args = []
                 
                 if to_format == 'docx':
-                    reference_doc_path = 'templates/report_template.docx'
+                    reference_doc_path = resource_path('templates/report_template.docx')
                     if os.path.exists(reference_doc_path):
                         extra_args.extend(['--reference-doc', reference_doc_path])
                         self.log(f"Usando template Word: {reference_doc_path}", "info")
@@ -701,7 +702,7 @@ class MainView(ttk.Window):
                                 author_field += f" - {company_name}"
                             current_date = datetime.now().strftime("%d/%m/%Y")
 
-                            with open("templates/report_template.typ", "r", encoding="utf-8") as f:
+                            with open(resource_path("templates/report_template.typ"), "r", encoding="utf-8") as f:
                                 typst_template = f.read()
 
                             full_typst = typst_template.replace("__TITLE__", "Relatório Técnico de Auditoria Zabbix").replace(
