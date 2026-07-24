@@ -23,7 +23,7 @@ Com base EXCLUSIVAMENTE nestes dados e no seu conhecimento sobre as melhores pr�
 7. **Segurança, Governança e Dependências Externas:** Exponha o número de usuários "Super Admin" (`super_admin_users_samples`) e scripts globais (`global_scripts_samples`), alertando para o risco de governança. Explique o impacto no SO (forks) de scripts externos executados via Agent/Server (`external_checks_samples`).
 8. **Avaliação de Templates:** Avalie uma amostra dos templates gerais do ambiente em `templates_list_sample`. Cite o uso de templates muito antigos ou customizados que fogem do padrão oficial.
 9. **Plano de Ação e Guia de Implementação:** Uma lista do que deve ser feito, classificada por Prioridade, fornecendo instruções técnicas de como realizar os ajustes da Prioridade Alta de forma segura.
-10. **Análise do Sistema Operacional:** Se logs ou `zabbix_server.conf` foram fornecidos em anexos, cruze com as anomalias detectadas.
+10. **Análise do Sistema Operacional:** Utilize `zabbix_server_os_metrics` (CPU, Load Average, Swap e Disk I/O do host do Zabbix Server) para avaliar se o hardware/SO da própria máquina do Server é um gargalo. Se estiver vazio, alerte que não há monitoramento de SO configurado na própria máquina do Zabbix Server — um ponto cego relevante. Se logs ou `zabbix_server.conf` foram fornecidos em anexos, cruze com as anomalias detectadas.
 
 REGRA DE OURO: Os clientes precisam de evidências. SEMPRE que mencionar um problema (hosts desativados, coletas agressivas, scripts externos), liste com "bullet points" os nomes, chaves e dados exatos fornecidos nas amostras (*samples*) do JSON. Nunca seja genérico.
 

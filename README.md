@@ -10,6 +10,7 @@ Ideal para consultores, arquitetos de monitoramento e equipes de infraestrutura 
 - **Autenticação via CLI local (assinatura)**: Além de API key, cada conta Anthropic/OpenAI/Google Gemini pode usar a CLI oficial já instalada e autenticada na máquina (`claude`, `codex`, `gemini`) em vez de cobrança por token — útil para quem já tem Claude Pro/Max, ChatGPT Plus/Pro ou Gemini Advanced. A aplicação chama a CLI em modo headless/somente-leitura (sem acesso a arquivos ou shell), nunca lê ou manipula o token OAuth diretamente. Veja "Modo CLI local" abaixo.
 - **Extração Automatizada via Zabbix API**: Coleta dados de Hosts, Itens (identificando polling agressivo e scripts externos), Templates e Proxies.
 - **Coleta sem IA ("📥 Apenas Coleta")**: Executa somente a extração de dados do Zabbix e salva o JSON coletado onde você escolher, sem enviar nada para a IA — útil para arquivar evidências, revisar a coleta antes de gastar tokens, ou rodar a coleta em um ambiente e gerar o relatório em outro.
+- **Gerar relatório a partir de uma coleta existente ("📂 Iniciar de Coleta")**: Carrega qualquer arquivo `.json` gerado pela "Apenas Coleta" (ou pelo cache automático) e envia direto para a IA, sem tocar no Zabbix — complementa o botão acima para separar totalmente coleta e geração do relatório.
 - **Inteligência de Cluster (HA Nativo)**: Descobre automaticamente qual é o nó *Active* do servidor em ambientes de Alta Disponibilidade para coletar métricas reais, ignorando nós *Standby*.
 - **Análise de Saúde Interna (Zabbix Health)**: Extrai o histórico recente de processos internos críticos (pollers, history syncers, caches, queue).
 - **Suporte Multi-Versão**: Identifica automaticamente a versão do Zabbix (suporta métodos de autenticação antigos via Payload e novos `>= 6.4` via Header Bearer).
@@ -109,7 +110,7 @@ GEMINI_API_KEY="SUA_CHAVE_DO_GOOGLE_GEMINI"
 3. Selecione a conta/provedor de IA e o modelo desejado (a lista de modelos é buscada dinamicamente ao validar a conexão, exceto em modo CLI local).
 4. Clique em **"▶ Iniciar Auditoria"**.
 5. Acompanhe o progresso na aba "Logs da Execução". Assim que finalizado, o relatório em Markdown estará disponível na aba "Relatório Final" e será salvo automaticamente na pasta do projeto como `relatorio_auditoria_zabbix.md`.
-6. Para reaproveitar a última coleta e gerar outro relatório sem consultar o Zabbix de novo, use **"🔄 Regerar (Apenas IA)"**. Para apenas coletar os dados do Zabbix e salvá-los em um arquivo `.json` à sua escolha — sem chamar a IA — use **"📥 Apenas Coleta"**.
+6. Para reaproveitar a última coleta e gerar outro relatório sem consultar o Zabbix de novo, use **"🔄 Regerar (Apenas IA)"**. Para apenas coletar os dados do Zabbix e salvá-los em um arquivo `.json` à sua escolha — sem chamar a IA — use **"📥 Apenas Coleta"**. Para gerar um relatório a partir de um arquivo de coleta específico (não necessariamente o último), use **"📂 Iniciar de Coleta"** e selecione o `.json`.
 
 ---
 

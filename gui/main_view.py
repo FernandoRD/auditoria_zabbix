@@ -1,5 +1,5 @@
 import ttkbootstrap as ttk
-from ttkbootstrap.scrolled import ScrolledText
+from ttkbootstrap.scrolled import ScrolledText, ScrolledFrame
 from ttkbootstrap.constants import BOTH, X, LEFT, RIGHT, WORD, END
 from ttkbootstrap.dialogs import Messagebox
 from ttkbootstrap.tooltip import ToolTip
@@ -32,7 +32,7 @@ class MainView(ttk.Window):
     def __init__(self):
         super().__init__(themename="darkly")
         self.title("Auditoria Inteligente de Zabbix")
-        self.geometry("1100x710")
+        self.geometry("1500x760")
         self.controller = None
 
         # Carrega defaults do .env (se existir)
@@ -276,7 +276,15 @@ class MainView(ttk.Window):
             command=self.collect_only_clicked,
             bootstyle="secondary"
         )
-        self.coletar_button.pack(side=LEFT, padx=(0, 10))
+        self.coletar_button.pack(side=LEFT, padx=(0, 5))
+
+        self.iniciar_de_arquivo_button = ttk.Button(
+            control_frame,
+            text="📂 Iniciar de Coleta",
+            command=self.start_from_file_clicked,
+            bootstyle="secondary"
+        )
+        self.iniciar_de_arquivo_button.pack(side=LEFT, padx=(0, 10))
 
         self.cancel_button = ttk.Button(
             control_frame,
@@ -330,16 +338,17 @@ class MainView(ttk.Window):
         self.notebook = ttk.Notebook(main_frame)
         self.notebook.pack(fill=BOTH, expand=True, side=tk.TOP)
 
-        # 1. Aba de Configurações
-        config_frame = ttk.Frame(self.notebook, padding=15)
-        self.notebook.add(config_frame, text="⚙️ Configurações")
+        # 1. Aba de Configurações (dashboard) — ScrolledFrame para não cortar campos quando a
+        # janela/DPI deixa o conteúdo mais alto do que a área visível da aba.
+        config_frame = ScrolledFrame(self.notebook, autohide=True, padding=15)
+        self.notebook.add(config_frame.container, text="⚙️ Configurações")
         
         cols_frame = ttk.Frame(config_frame)
         cols_frame.pack(fill=BOTH, expand=True)
-        
+
         left_col = ttk.Frame(cols_frame)
         left_col.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        
+
         right_col = ttk.Frame(cols_frame)
         right_col.pack(side=RIGHT, fill=BOTH, expand=True, padx=(10, 0))
 
@@ -402,7 +411,7 @@ class MainView(ttk.Window):
         
         # --- Dados do Analista ---
         analyst_frame = ttk.LabelFrame(left_col, text="Dados do Analista / Empresa (Cabeçalho do Relatório)")
-        analyst_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
+        analyst_frame.pack(fill=X, pady=(0, 7), ipadx=10, ipady=7)
         analyst_frame.columnconfigure(1, weight=1)
         
         ttk.Label(analyst_frame, text="Nome:").grid(row=0, column=0, sticky="w", pady=5)
@@ -445,9 +454,13 @@ class MainView(ttk.Window):
         ttk.Button(export_frame, text="🎨 Configurar Estilos de Gráfico", command=self.open_style_settings_window, bootstyle="info-outline").pack(side=LEFT, padx=10, pady=5)
 
         # --- Instruções Customizadas ---
+        # Sem expand=True (igual às outras LabelFrames à esquerda): o topo continua exatamente
+        # onde ficava antes (logo abaixo de export_frame) e a altura passa a ser a do próprio
+        # ScrolledText (height em linhas), não mais "esticar até o fim da aba". analyst_frame não
+        # é tocado — só a base de Instruções sobe para ficar perto da base de Dados do Analista.
         inst_frame = ttk.LabelFrame(right_col, text="Instruções Customizadas para a IA")
-        inst_frame.pack(fill=BOTH, expand=True, pady=(0, 10), ipadx=10, ipady=10)
-        self.custom_instructions_text = ScrolledText(inst_frame, wrap=WORD, autohide=True)
+        inst_frame.pack(fill=X, pady=(0, 10), ipadx=10, ipady=10)
+        self.custom_instructions_text = ScrolledText(inst_frame, wrap=WORD, autohide=True, height=20)
         self.custom_instructions_text.pack(fill=BOTH, expand=True, padx=5, pady=5)
         self.custom_instructions_text.text.insert(END, self.custom_instructions_var)
 
@@ -777,6 +790,22 @@ class MainView(ttk.Window):
         if self.controller:
             self.controller.start_collection_only(file_path)
 
+    def start_from_file_clicked(self):
+        initial_dir = self.settings.get("last_collect_dir", os.path.expanduser("~"))
+        file_path = filedialog.askopenfilename(
+            title="Selecionar Coleta Existente",
+            initialdir=initial_dir,
+            filetypes=[("Arquivos JSON", "*.json"), ("Todos os arquivos", "*.*")]
+        )
+        if not file_path:
+            return
+
+        self.settings["last_collect_dir"] = os.path.dirname(file_path)
+        self.save_settings()
+
+        if self.controller:
+            self.controller.start_audit(data_file=file_path)
+
     def cancel_audit_clicked(self):
         if self.controller:
             self.controller.cancel_audit()
@@ -825,5 +854,6 @@ class MainView(ttk.Window):
         self.start_button.configure(state=state)
         if hasattr(self, 'regerar_button'): self.regerar_button.configure(state=state)
         if hasattr(self, 'coletar_button'): self.coletar_button.configure(state=state)
+        if hasattr(self, 'iniciar_de_arquivo_button'): self.iniciar_de_arquivo_button.configure(state=state)
         if hasattr(self, 'test_zabbix_button'): self.test_zabbix_button.configure(state=state)
         if hasattr(self, 'cancel_button'): self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")

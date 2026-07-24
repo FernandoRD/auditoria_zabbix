@@ -95,14 +95,17 @@ class Controller:
         sanitized = re.sub(password_pattern, r'\1 = "***"', sanitized)
         return sanitized
 
-    def start_audit(self, use_cache=False):
+    def start_audit(self, use_cache=False, data_file=None):
         """Inicia o processo de auditoria em uma nova thread para não travar a GUI."""
         self.cancel_event.clear()
         self.view.set_ui_state('disabled')
         self.view.notebook.select(1) # Transição mágica para a aba "Logs"
-        self.view.log("Iniciando auditoria (Usando Cache)..." if use_cache else "Iniciando auditoria (Nova Coleta)...")
+        if data_file:
+            self.view.log(f"Iniciando auditoria a partir do arquivo de coleta: {data_file}...")
+        else:
+            self.view.log("Iniciando auditoria (Usando Cache)..." if use_cache else "Iniciando auditoria (Nova Coleta)...")
 
-        audit_thread = threading.Thread(target=self.run_audit_flow, args=(use_cache,))
+        audit_thread = threading.Thread(target=self.run_audit_flow, args=(use_cache, data_file))
         audit_thread.daemon = True
         audit_thread.start()
 
@@ -205,7 +208,7 @@ class Controller:
         finally:
             self.view.set_ui_state('normal')
 
-    def run_audit_flow(self, use_cache):
+    def run_audit_flow(self, use_cache, data_file=None):
         z_url = self.view.zabbix_url_var.get().strip()
         auth_method = self.view.zabbix_auth_method_var.get()
         z_user = self.view.zabbix_user_var.get().strip()
@@ -223,21 +226,33 @@ class Controller:
         template_limit = self.view.template_limit_var.get()
         only_used_templates = self.view.only_used_templates_var.get()
 
-        required_fields = [z_url, ai_mod] if ai_auth_mode == "cli" else [z_url, ai_key, ai_mod]
+        ai_required_fields = [ai_mod] if ai_auth_mode == "cli" else [ai_key, ai_mod]
+        required_fields = ai_required_fields if data_file else [z_url] + ai_required_fields
         if not all(required_fields):
             self.view.log("ERRO: Preencha todas as configurações na aba 'Configurações' antes de iniciar.", "danger")
             self.view.set_ui_state('normal')
             return
 
-        credentials_error = self._validate_zabbix_credentials(auth_method, z_token, z_user, z_pass)
-        if credentials_error:
-            self.view.log(credentials_error, "danger")
-            self.view.set_ui_state('normal')
-            return
+        if not data_file:
+            credentials_error = self._validate_zabbix_credentials(auth_method, z_token, z_user, z_pass)
+            if credentials_error:
+                self.view.log(credentials_error, "danger")
+                self.view.set_ui_state('normal')
+                return
 
         try:
             zabbix_data = {}
-            if not use_cache:
+            if data_file:
+                self.view.update_progress(30, "Carregando dados do arquivo selecionado...")
+                try:
+                    with open(data_file, "r", encoding="utf-8") as f:
+                        zabbix_data = json.load(f)
+                    self.view.log(f"Dados carregados com sucesso de: {data_file}")
+                except Exception as e:
+                    self.view.log(f"Erro: Não foi possível carregar o arquivo selecionado: {e}", "danger")
+                    self.view.update_progress(0, "Erro ao carregar arquivo.")
+                    return
+            elif not use_cache:
                 zabbix_data = self._collect_zabbix_data(
                     z_url, auth_method, z_user, z_pass, z_token, verify_ssl, anonymize,
                     history_limit, sample_limit, template_limit, only_used_templates
