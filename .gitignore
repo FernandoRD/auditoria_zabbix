@@ -3,9 +3,14 @@
 settings.json
 last_audit_cache.json
 
-# Relatórios gerados e arquivos de lock (contêm dados reais de clientes)
+# Relatórios gerados e evidências de auditoria (contêm dados reais de clientes)
 relatorio zabbix.docx
 relatorio_auditoria_zabbix.md
+relatorio*.docx
+relatorio*.pdf
+relatorio*.odt
+relatorio*.md
+evidencias_os*.txt
 ~$*
 
 # Instaladores de terceiros (não devem ser versionados)
@@ -14,10 +19,33 @@ relatorio_auditoria_zabbix.md
 
 # Cache do Python
 __pycache__/
+*.pyc
+*.pyo
 
 # Virtual env
 venv
+env/
 
 # Artefatos de build do PyInstaller
 build/
 dist/
+
+# Logs
+*.log
+
+# Cache de testes/ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Estado local do Claude Code (não é config de projeto)
+.claude/
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
+
+# Arquivos de SO
+.DS_Store
+Thumbs.db
