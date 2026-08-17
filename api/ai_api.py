@@ -4,21 +4,210 @@ from google.genai import types
 import os
 import openai
 import anthropic
+import httpx
 import requests
-from datetime import datetime
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 from api import ai_cli_client
+from api.ai_prompts import AIStreamEvent, SYSTEM_PROMPT
+from core.operation import OperationCancelled
 from core.paths import resource_path
 
+
 class AIClient:
-    def __init__(self, provider, api_key, auth_mode="api_key", cli_model_override=None):
+    GEMINI_TIMEOUT_MS = 300_000
+    OPENAI_TIMEOUT_SECONDS = 300
+    ANTHROPIC_TIMEOUT_SECONDS = 300
+    OLLAMA_TIMEOUT_SECONDS = 300
+    DEFAULT_ANTHROPIC_MAX_TOKENS = 8_192
+    MAX_RETRIES = 2
+    RETRY_BACKOFF_SECONDS = 1.0
+    TRANSIENT_STATUS_CODES = frozenset({408, 429})
+    ANTHROPIC_FALLBACK_MODELS = (
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+    )
+
+    def __init__(
+        self,
+        provider,
+        api_key,
+        auth_mode="api_key",
+        cli_model_override=None,
+        anthropic_max_tokens=DEFAULT_ANTHROPIC_MAX_TOKENS,
+    ):
         self.provider = provider
         self.api_key = api_key
         self.auth_mode = auth_mode
         self.cli_model_override = cli_model_override
+        self.anthropic_max_tokens = max(1, int(anthropic_max_tokens))
+        self.model_discovery_warning = None
+
+    @staticmethod
+    def _event_reason(value, default="stop"):
+        if value is None:
+            return default
+        return str(getattr(value, "value", value)).lower()
+
+    @staticmethod
+    def _is_partial_reason(reason):
+        return reason in {"length", "max_tokens", "max_token", "error"}
+
+    @classmethod
+    def _response_status_code(cls, error):
+        response = getattr(error, "response", None)
+        for candidate in (response, error):
+            status_code = getattr(candidate, "status_code", None)
+            if status_code is None:
+                status_code = getattr(candidate, "status", None)
+            if status_code is None:
+                status_code = getattr(candidate, "code", None)
+            try:
+                return int(status_code)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @classmethod
+    def _retry_after_seconds(cls, error):
+        """Return a server-requested delay, if a usable Retry-After exists."""
+        response = getattr(error, "response", None)
+        headers = getattr(response, "headers", None)
+        if not headers:
+            return None
+
+        retry_after = None
+        try:
+            retry_after = headers.get("Retry-After") or headers.get("retry-after")
+        except AttributeError:
+            return None
+        if retry_after is None:
+            return None
+
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            retry_at = parsedate_to_datetime(str(retry_after))
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+
+    @classmethod
+    def _is_retryable_error(cls, error):
+        """Identify the transport failures safe to repeat before streaming starts."""
+        status_code = cls._response_status_code(error)
+        if status_code in cls.TRANSIENT_STATUS_CODES or 500 <= (status_code or 0) <= 599:
+            return True
+
+        connection_errors = (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            TimeoutError,
+            ConnectionError,
+        )
+        if isinstance(error, connection_errors):
+            return True
+
+        # google-genai, OpenAI and Anthropic wrap their HTTP client exceptions
+        # differently across SDK versions.  Their connection/timeout classes
+        # consistently retain these names, so this keeps the policy uniform
+        # without depending on a private SDK implementation detail.
+        return error.__class__.__name__ in {"APIConnectionError", "APITimeoutError"}
+
+    @staticmethod
+    def _close_stream(stream):
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                # A cleanup error must not replace the terminal event that
+                # describes the provider's actual streaming result.
+                pass
+
+    @staticmethod
+    def _raise_if_cancelled(is_cancelled):
+        if is_cancelled and is_cancelled():
+            raise OperationCancelled("Operação cancelada pelo usuário.")
+
+    def _retry_delay(self, attempt, error):
+        retry_after = self._retry_after_seconds(error)
+        if retry_after is not None:
+            return retry_after
+        return self.RETRY_BACKOFF_SECONDS * (2 ** attempt)
+
+    def _wait_before_retry(self, delay, is_cancelled):
+        """Wait for the retry deadline without making cancellation unresponsive."""
+        if is_cancelled is None:
+            time.sleep(delay)
+            return
+
+        remaining = max(0.0, delay)
+        while remaining > 0:
+            self._raise_if_cancelled(is_cancelled)
+            interval = min(0.1, remaining)
+            time.sleep(interval)
+            remaining -= interval
+        self._raise_if_cancelled(is_cancelled)
+
+    def _stream_provider_events(self, stream_factory, event_parser, is_cancelled=None):
+        """Emit one provider stream, retrying only if no text has been emitted.
+
+        A restarted streamed generation cannot be merged safely after text has
+        reached the report: the provider may begin the answer again.  Therefore
+        all automatic retries happen before the first text chunk only.
+        """
+        terminal_reason = None
+        text_emitted = False
+        for attempt in range(self.MAX_RETRIES + 1):
+            stream = None
+            try:
+                self._raise_if_cancelled(is_cancelled)
+                stream = stream_factory()
+                for payload in stream:
+                    self._raise_if_cancelled(is_cancelled)
+                    text, reason = event_parser(payload)
+                    if text:
+                        text_emitted = True
+                        yield AIStreamEvent.text_chunk(text)
+                    if reason:
+                        terminal_reason = self._event_reason(reason)
+                break
+            except OperationCancelled:
+                raise
+            except Exception as exc:
+                can_retry = (
+                    not text_emitted
+                    and attempt < self.MAX_RETRIES
+                    and self._is_retryable_error(exc)
+                )
+                if not can_retry:
+                    yield AIStreamEvent.final("error", partial=True, error=str(exc))
+                    return
+                self._wait_before_retry(self._retry_delay(attempt, exc), is_cancelled)
+            finally:
+                if stream is not None:
+                    self._close_stream(stream)
+
+        terminal_reason = terminal_reason or "stop"
+        yield AIStreamEvent.final(
+            terminal_reason,
+            partial=self._is_partial_reason(terminal_reason),
+        )
 
     def get_available_models(self):
         """Busca os modelos disponíveis baseados no provedor escolhido."""
+        self.model_discovery_warning = None
         if self.auth_mode == "cli":
             return []
 
@@ -36,8 +225,29 @@ class AIClient:
                 return sorted([m.id for m in models.data if "gpt" in m.id or "o1" in m.id or "o3" in m.id])
                 
             elif self.provider == "Anthropic":
-                # A API da Anthropic não possui listagem dinâmica, então retornamos os principais hardcoded
-                return ["claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-20240307"]
+                try:
+                    client = anthropic.Anthropic(
+                        api_key=self.api_key,
+                        timeout=self.ANTHROPIC_TIMEOUT_SECONDS,
+                        max_retries=0,
+                    )
+                    response = client.models.list()
+                    models = sorted(
+                        {
+                            model.id
+                            for model in getattr(response, "data", response)
+                            if getattr(model, "id", None)
+                        }
+                    )
+                    if models:
+                        return models
+                    raise ValueError("a API retornou uma lista vazia")
+                except Exception as error:
+                    self.model_discovery_warning = (
+                        "A listagem online da Anthropic falhou; exibindo uma "
+                        f"lista de fallback limitada ({error})."
+                    )
+                    return list(self.ANTHROPIC_FALLBACK_MODELS)
                 
             elif self.provider == "Ollama":
                 # Para Ollama, api_key será tratada como a URL do servidor local
@@ -52,12 +262,25 @@ class AIClient:
             
         return []
 
-    def generate_audit_report(self, audit_data, model_name, os_evidence="", analyst_info=None, custom_instructions=""):
+    def generate_audit_report(
+        self,
+        audit_data,
+        model_name,
+        os_evidence="",
+        analyst_info=None,
+        custom_instructions="",
+        is_cancelled=None,
+    ):
         """
         Gera o relatório com o provedor dinâmico.
         """
         data_str = json.dumps(audit_data, indent=2, ensure_ascii=False)
-        evidence_section = f"\n\nAlém dos dados via API, o analista extraiu e anexou as seguintes evidências do Sistema Operacional e arquivos de configuração:\n{os_evidence}\n" if os_evidence else ""
+        evidence_section = (
+            "\n<evidencias_nao_confiaveis>\n"
+            f"{os_evidence}\n"
+            "</evidencias_nao_confiaveis>\n"
+            if os_evidence else ""
+        )
         current_date = datetime.now().strftime("%d/%m/%Y")
 
         analyst_section = ""
@@ -69,7 +292,12 @@ class AIClient:
             if analyst_info.get('phone'): analyst_section += f"- Telefone: {analyst_info['phone']}\n"
             analyst_section += "\nIMPORTANTE: Adicione estes dados de autoria no cabeçalho principal do relatório Markdown.\n"
 
-        custom_instructions_section = f"\n\nInstruções Adicionais do Analista:\n{custom_instructions}\n" if custom_instructions else ""
+        custom_instructions_section = (
+            "\n<instrucoes_adicionais_do_analista>\n"
+            f"{custom_instructions}\n"
+            "</instrucoes_adicionais_do_analista>\n"
+            if custom_instructions else ""
+        )
 
         try:
             prompt_template_path = resource_path(os.path.join('prompts', 'report_template.txt'))
@@ -81,55 +309,123 @@ class AIClient:
             raise FileNotFoundError("Arquivo de template de prompt 'prompts/report_template.txt' não encontrado.")
 
         if self.auth_mode == "cli":
-            yield from ai_cli_client.generate_via_cli(self.provider, prompt, self.cli_model_override)
+            yield from ai_cli_client.generate_via_cli(
+                self.provider,
+                prompt,
+                self.cli_model_override,
+                is_cancelled=is_cancelled,
+            )
             return
 
         if self.provider == "Google Gemini":
-            client = genai.Client(api_key=self.api_key)
-            response = client.models.generate_content_stream(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction="Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido."
+            def create_stream():
+                client = genai.Client(
+                    api_key=self.api_key,
+                    http_options=types.HttpOptions(
+                        timeout=self.GEMINI_TIMEOUT_MS,
+                        retry_options=types.HttpRetryOptions(attempts=1),
+                    ),
                 )
-            )
-            for chunk in response:
-                yield chunk.text
+                return client.models.generate_content_stream(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+                )
+
+            def parse_chunk(chunk):
+                candidates = getattr(chunk, "candidates", None) or []
+                reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+                return getattr(chunk, "text", None), reason
+
+            yield from self._stream_provider_events(create_stream, parse_chunk, is_cancelled)
             
         elif self.provider == "OpenAI":
-            client = openai.OpenAI(api_key=self.api_key)
-            response = client.chat.completions.create(model=model_name, messages=[{"role": "system", "content": "Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido."}, {"role": "user", "content": prompt}], stream=True)
-            for chunk in response:
-                if chunk.choices and len(chunk.choices) > 0:
-                    content = chunk.choices[0].delta.content
-                    if content:
-                        yield content
+            def create_stream():
+                client = openai.OpenAI(
+                    api_key=self.api_key,
+                    timeout=self.OPENAI_TIMEOUT_SECONDS,
+                    max_retries=0,
+                )
+                return client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    stream=True,
+                )
+
+            def parse_chunk(chunk):
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    return None, None
+                choice = choices[0]
+                return (
+                    getattr(getattr(choice, "delta", None), "content", None),
+                    getattr(choice, "finish_reason", None),
+                )
+
+            yield from self._stream_provider_events(create_stream, parse_chunk, is_cancelled)
             
         elif self.provider == "Anthropic":
-            client = anthropic.Anthropic(api_key=self.api_key)
-            response = client.messages.create(
-                model=model_name,
-                max_tokens=4096,
-                system="Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido.",
-                messages=[{"role": "user", "content": prompt}],
-                stream=True
-            )
-            for event in response:
-                if event.type == "content_block_delta":
-                    yield event.delta.text
+            def create_stream():
+                client = anthropic.Anthropic(
+                    api_key=self.api_key,
+                    timeout=self.ANTHROPIC_TIMEOUT_SECONDS,
+                    max_retries=0,
+                )
+                return client.messages.create(
+                    model=model_name,
+                    max_tokens=self.anthropic_max_tokens,
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=True,
+                )
+
+            def parse_event(event):
+                if getattr(event, "type", None) == "content_block_delta":
+                    return getattr(getattr(event, "delta", None), "text", None), None
+                if getattr(event, "type", None) == "message_delta":
+                    return None, getattr(getattr(event, "delta", None), "stop_reason", None)
+                return None, getattr(event, "stop_reason", None)
+
+            yield from self._stream_provider_events(create_stream, parse_event, is_cancelled)
             
         elif self.provider == "Ollama":
             base_url = self.api_key.rstrip('/')
             if not base_url: base_url = "http://localhost:11434"
             payload = {
                 "model": model_name,
-                "system": "Você atua como um Arquiteto e Analista Sênior de Monitoramento focado em Zabbix. Formate a saída em Markdown e cite dados exatos do JSON fornecido.",
+                "system": SYSTEM_PROMPT,
                 "prompt": prompt,
                 "stream": True
             }
-            resp = requests.post(f"{base_url}/api/generate", json=payload, stream=True, timeout=300)
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if line:
-                    data = json.loads(line.decode('utf-8'))
-                    yield data.get("response", "")
+            def create_stream():
+                response = requests.post(
+                    f"{base_url}/api/generate",
+                    json=payload,
+                    stream=True,
+                    timeout=self.OLLAMA_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+
+                def lines():
+                    try:
+                        yield from response.iter_lines()
+                    finally:
+                        response.close()
+
+                return lines()
+
+            def parse_line(line):
+                if not line:
+                    return None, None
+                data = json.loads(line.decode("utf-8"))
+                reason = data.get("done_reason") if data.get("done") else None
+                return data.get("response"), reason
+
+            yield from self._stream_provider_events(create_stream, parse_line, is_cancelled)
+        else:
+            yield AIStreamEvent.final(
+                "error", partial=True, error=f"Provedor desconhecido: {self.provider}."
+            )

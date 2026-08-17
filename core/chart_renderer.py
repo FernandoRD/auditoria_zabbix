@@ -1,4 +1,5 @@
 import re
+import math
 
 import logging
 
@@ -47,15 +48,25 @@ def parse_xychart(code):
             y_range = (float(y_axis_match.group(2)), float(y_axis_match.group(3)))
 
     series = []
-    for series_match in re.finditer(r'^\s*(line|bar)\s*\[(.*?)\]', code, re.MULTILINE):
+    warnings = []
+    for series_index, series_match in enumerate(
+        re.finditer(r'^\s*(line|bar)\s*\[(.*?)\]', code, re.MULTILINE), start=1
+    ):
         series_type = series_match.group(1)
         values_str = series_match.group(2)
-        try:
-            values = [float(v.strip()) for v in values_str.split(',') if v.strip()]
-        except ValueError:
-            continue
-        if values:
-            series.append({"type": series_type, "values": values})
+        values = []
+        for raw_value in values_str.split(','):
+            value = raw_value.strip()
+            try:
+                number = float(value) if value else math.nan
+                values.append(number if math.isfinite(number) else math.nan)
+            except ValueError:
+                values.append(math.nan)
+        if not any(math.isfinite(value) for value in values):
+            warnings.append(
+                f"Série {series_index} ({series_type}) totalmente inválida."
+            )
+        series.append({"type": series_type, "values": values})
 
     if not series:
         return None
@@ -66,7 +77,60 @@ def parse_xychart(code):
         "y_label": y_label,
         "y_range": y_range,
         "series": series,
+        "warnings": warnings,
+        "chart_type": "xychart",
     }
+
+
+def parse_pie(code):
+    """Parse a Mermaid pie block without applying xychart normalization."""
+    if not re.search(r'^\s*pie(?:\s+showData)?\s*$', code, re.MULTILINE | re.IGNORECASE):
+        return None
+
+    title_match = re.search(
+        r'^\s*title\s+(?:"([^"]*)"|(.+?))\s*$',
+        code,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    labels = []
+    values = []
+    warnings = []
+    entry_pattern = re.compile(
+        r'^\s*"([^"]+)"\s*:\s*([^\s]+)\s*$', re.MULTILINE
+    )
+    for label, raw_value in entry_pattern.findall(code):
+        try:
+            value = float(raw_value)
+        except ValueError:
+            warnings.append(f"Fatia '{label}' ignorada: valor inválido.")
+            continue
+        if not math.isfinite(value) or value < 0:
+            warnings.append(f"Fatia '{label}' ignorada: valor deve ser finito e não negativo.")
+            continue
+        labels.append(label.strip())
+        values.append(value)
+
+    if not values or sum(values) <= 0:
+        return None
+    return {
+        "title": (title_match.group(1) or title_match.group(2)).strip() if title_match else "",
+        "labels": labels,
+        "values": values,
+        "warnings": warnings,
+        "chart_type": "pie",
+    }
+
+
+def parse_mermaid_chart(code):
+    """Dispatch supported Mermaid chart types to their independent parsers."""
+    return parse_pie(code) or parse_xychart(code)
+
+
+def _axis_labels(labels, count):
+    """Truncate excess labels and synthesize stable labels when they are short."""
+    normalized = list(labels[:count])
+    normalized.extend(str(index + 1) for index in range(len(normalized), count))
+    return normalized
 
 
 def _matplotlib_font_family(css_font_stack):
@@ -100,20 +164,46 @@ def render_chart(chart, style, output_path):
         fig.patch.set_facecolor(bg)
         ax.set_facecolor(bg)
 
-    x_labels = chart["x_labels"]
-    for s in chart["series"]:
-        values = s["values"]
-        x = x_labels[:len(values)] if x_labels else list(range(len(values)))
-        if s["type"] == "bar":
-            ax.bar(x, values, color=color)
-        else:
-            ax.plot(x, values, color=color, marker="o")
+    if chart.get("chart_type") == "pie":
+        ax.pie(
+            chart["values"],
+            labels=chart["labels"],
+            colors=None,
+            textprops={"color": text_color, "fontfamily": font_family},
+            autopct="%1.1f%%",
+        )
+        ax.axis("equal")
+    else:
+        renderable_series = [
+            series
+            for series in chart["series"]
+            if any(math.isfinite(value) for value in series["values"])
+        ]
+        if not renderable_series:
+            raise ValueError("o gráfico não possui nenhuma série com valor numérico")
+
+        point_count = max(len(series["values"]) for series in renderable_series)
+        positions = list(range(point_count))
+        labels = _axis_labels(chart.get("x_labels", []), point_count)
+        bar_series = [series for series in renderable_series if series["type"] == "bar"]
+        bar_width = 0.8 / max(1, len(bar_series))
+        bar_index = 0
+        for series in renderable_series:
+            values = series["values"]
+            x = positions[:len(values)]
+            if series["type"] == "bar":
+                offset = (bar_index - (len(bar_series) - 1) / 2) * bar_width
+                ax.bar([position + offset for position in x], values, width=bar_width, color=color)
+                bar_index += 1
+            else:
+                ax.plot(x, values, color=color, marker="o")
+        ax.set_xticks(positions, labels)
 
     if chart["title"]:
         ax.set_title(chart["title"], color=text_color, fontfamily=font_family)
-    if chart["y_label"]:
+    if chart.get("y_label"):
         ax.set_ylabel(chart["y_label"], color=text_color, fontfamily=font_family)
-    if chart["y_range"]:
+    if chart.get("y_range"):
         ax.set_ylim(chart["y_range"])
 
     ax.tick_params(colors=text_color)

@@ -1,8 +1,9 @@
 import os
+import math
 import tempfile
 import unittest
 
-from core.chart_renderer import normalize_mermaid, parse_xychart, render_chart
+from core.chart_renderer import normalize_mermaid, parse_pie, parse_xychart, render_chart
 
 
 class TestNormalizeMermaid(unittest.TestCase):
@@ -49,6 +50,7 @@ class TestParseXychart(unittest.TestCase):
         self.assertEqual(result["y_label"], "Valores")
         self.assertIsNone(result["y_range"])
         self.assertEqual(result["series"], [{"type": "line", "values": [10.0, 20.0, 15.0, 30.0]}])
+        self.assertEqual([], result["warnings"])
 
     def test_y_axis_with_range(self):
         code = (
@@ -88,6 +90,41 @@ class TestParseXychart(unittest.TestCase):
     def test_xychart_without_series_returns_none(self):
         code = 'xychart-beta\n  title "Vazio"\n  x-axis ["a"]\n  y-axis "V"'
         self.assertIsNone(parse_xychart(code))
+
+    def test_invalid_point_becomes_nan_without_discarding_series(self):
+        result = parse_xychart(
+            'xychart-beta\n  x-axis ["a","b","c","d"]\n'
+            '  line [1, N/A, , 4]'
+        )
+
+        values = result["series"][0]["values"]
+        self.assertEqual(4, len(values))
+        self.assertEqual(1.0, values[0])
+        self.assertTrue(math.isnan(values[1]))
+        self.assertTrue(math.isnan(values[2]))
+        self.assertEqual(4.0, values[3])
+
+    def test_all_invalid_series_is_retained_with_warning(self):
+        result = parse_xychart('xychart-beta\n  line [N/A, vazio]')
+
+        self.assertEqual(1, len(result["series"]))
+        self.assertIn("totalmente inválida", result["warnings"][0])
+
+
+class TestParsePie(unittest.TestCase):
+    def test_valid_pie(self):
+        result = parse_pie(
+            'pie showData\n  title "Problemas"\n  "Alta" : 8\n  "Baixa" : 2'
+        )
+
+        self.assertEqual("pie", result["chart_type"])
+        self.assertEqual(["Alta", "Baixa"], result["labels"])
+        self.assertEqual([8.0, 2.0], result["values"])
+
+    def test_invalid_or_empty_pie_returns_none(self):
+        self.assertIsNone(parse_pie('pie\n  "Alta" : N/A'))
+        self.assertIsNone(parse_pie('pie\n  "Alta" : -1'))
+        self.assertIsNone(parse_pie('flowchart TD\n A --> B'))
 
 
 class TestRenderChart(unittest.TestCase):
@@ -145,6 +182,32 @@ class TestRenderChart(unittest.TestCase):
         output_path = os.path.join(self.tmpdir, "fallback.png")
         render_chart(self.chart, style, output_path)
         self.assertTrue(os.path.exists(output_path))
+
+    def test_renders_with_short_and_long_label_lists(self):
+        short = dict(self.chart, x_labels=["apenas um"])
+        long = dict(self.chart, x_labels=["a", "b", "c", "extra"])
+        for name, chart in (("short.png", short), ("long.png", long)):
+            output_path = os.path.join(self.tmpdir, name)
+            render_chart(chart, {}, output_path)
+            self.assertGreater(os.path.getsize(output_path), 0)
+
+    def test_renders_isolated_nan_and_multiple_bar_series(self):
+        chart = dict(
+            self.chart,
+            series=[
+                {"type": "bar", "values": [1.0, math.nan, 3.0]},
+                {"type": "bar", "values": [2.0, 4.0, math.nan]},
+            ],
+        )
+        output_path = os.path.join(self.tmpdir, "nan_multi.png")
+        render_chart(chart, {}, output_path)
+        self.assertGreater(os.path.getsize(output_path), 0)
+
+    def test_renders_pie(self):
+        chart = parse_pie('pie showData\n  title "Tipos"\n  "A" : 3\n  "B" : 7')
+        output_path = os.path.join(self.tmpdir, "pie.png")
+        render_chart(chart, {}, output_path)
+        self.assertGreater(os.path.getsize(output_path), 0)
 
 
 if __name__ == "__main__":

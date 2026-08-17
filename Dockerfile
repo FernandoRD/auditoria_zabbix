@@ -1,5 +1,5 @@
 # Usar uma imagem base oficial do Python
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Evitar que o Python grave arquivos .pyc e forçar logs no console
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -27,12 +27,26 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Baixar o binário do Pandoc (>= 3.1.7, necessário para o writer Typst) via pypandoc,
 # em vez do pacote "pandoc" do apt (Debian slim traz uma versão 2.x sem suporte a Typst)
-RUN python -c "import pypandoc; pypandoc.download_pandoc()"
+RUN python -c "import pypandoc; pypandoc.download_pandoc(targetfolder='/opt/pandoc', delete_installer=True)"
+ENV PYPANDOC_PANDOC=/opt/pandoc/pandoc
 
-# CACHE BUST START (Não fazer cache daqui em diante)
-ARG CACHEBUST=1 
-# Copiar o restante do código da aplicação
-COPY . .
+# Copiar somente o conteúdo necessário em runtime; o contexto de build pode
+# conter credenciais, evidências e relatórios locais.
+COPY api ./api
+COPY core ./core
+COPY gui ./gui
+COPY prompts ./prompts
+COPY templates ./templates
+COPY main.py __init__.py ./
+
+# A aplicação de desktop não precisa rodar como root dentro do contêiner.
+RUN groupadd --system app && \
+    useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app && \
+    chown -R app:app /app && \
+    install -d --owner=app --group=app --mode=0700 /data /data/tmp && \
+    install -d --mode=1777 /tmp/.X11-unix && \
+    touch /tmp/.Xauthority
+USER app
 
 # Comando para iniciar a aplicação
-CMD ["python", "main.py"]
+CMD ["python", "/app/main.py"]

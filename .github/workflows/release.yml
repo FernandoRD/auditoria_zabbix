@@ -9,7 +9,11 @@ permissions:
   contents: write
 
 jobs:
+  quality:
+    uses: ./.github/workflows/tests.yml
+
   build:
+    needs: quality
     strategy:
       fail-fast: false
       matrix:
@@ -46,8 +50,30 @@ jobs:
       - name: Instalar PyInstaller
         run: pip install pyinstaller pyinstaller-hooks-contrib
 
+      - name: Baixar e verificar Pandoc para o bundle
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/prepare_pandoc.py --output-dir build/pandoc
+
       - name: Build com PyInstaller
         run: pyinstaller pyinstaller.spec --noconfirm
+
+      - name: Smoke test offline do bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          NO_PROXY: ""
+        run: '& "dist/AuditoriaZabbix/AuditoriaZabbix.exe" --packaging-smoke-test'
+
+      - name: Smoke test offline do bundle (Linux)
+        if: runner.os == 'Linux'
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          NO_PROXY: ""
+        run: dist/AuditoriaZabbix/AuditoriaZabbix --packaging-smoke-test
 
       - name: Empacotar artefato (Windows)
         if: runner.os == 'Windows'

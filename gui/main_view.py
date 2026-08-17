@@ -5,39 +5,79 @@ from ttkbootstrap.dialogs import Messagebox
 from ttkbootstrap.tooltip import ToolTip
 import tkinter as tk
 import threading
+import queue
 from tkinter import filedialog
 import os
 import re
-import json
-import shutil
 import keyring
-import tempfile
+import ipaddress
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from datetime import datetime
 from gui.manage_accounts_view import ManageAccountsWindow
 from gui.style_settings_view import StyleSettingsWindow
 from gui.manage_attachments_view import ManageAttachmentsWindow
 from api.ai_cli_client import cli_binary_status
-from core.paths import resource_path
-from core import chart_renderer
+from core.paths import get_app_paths
+from core.persistence import SettingsStore, atomic_write_text
+from core.report_exporter import ReportExporter, ReportMetadata
+from core.pandoc_runtime import pandoc_download_requirement
+from core.run_config import (
+    AIConfig,
+    AnalystData,
+    AuditRequest,
+    CollectionLimits,
+    CollectionRequest,
+    ReportStyle,
+    ZabbixConfig,
+)
 
-def _escape_typst_text(text):
-    """Escapa caracteres com significado especial em markup Typst (usado só para os
-    campos de texto livre da capa do PDF — nome/empresa do analista)."""
-    for ch in ['\\', '#', '*', '_', '`', '<', '>', '@', '$', '[', ']']:
-        text = text.replace(ch, '\\' + ch)
-    return text
+def _is_local_ollama_destination(ai_config):
+    """Return whether the selected AI destination stays on this machine."""
+    if ai_config.provider.casefold() != "ollama":
+        return False
+    if ai_config.auth_mode.casefold() == "cli":
+        return True
+
+    endpoint = ai_config.api_key.strip()
+    if not endpoint:
+        return False
+    parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    normalized_host = hostname.rstrip(".").casefold()
+    if normalized_host == "localhost" or normalized_host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(normalized_host).is_loopback
+    except ValueError:
+        return False
 
 class MainView(ttk.Window):
+    UI_EVENT_POLL_MS = 50
+
     def __init__(self):
         super().__init__(themename="darkly")
         self.title("Auditoria Inteligente de Zabbix")
         self.geometry("1500x760")
         self.controller = None
+        self.ui_event_queue = queue.Queue()
+        self._ui_event_lock = threading.Lock()
+        self._ui_events_closed = False
+        self._startup_warnings = []
+        self._model_state = "idle"
+        self._model_values = ()
+        self._model_load_id = 0
 
         # Carrega defaults do .env (se existir)
         load_dotenv()
-        self.settings_file = "settings.json"
+        self.app_paths = get_app_paths()
+        self.settings_store = SettingsStore(
+            self.app_paths, legacy_file=os.path.join(os.getcwd(), "settings.json")
+        )
+        self.settings_file = self.settings_store.path
+        self._legacy_credentials = {}
         self.ai_accounts = {
             "Google Gemini": {"provider": "Google Gemini", "api_key": os.getenv("GEMINI_API_KEY", ""), "auth_mode": "api_key", "cli_model_override": ""},
             "OpenAI": {"provider": "OpenAI", "api_key": os.getenv("OPENAI_API_KEY", ""), "auth_mode": "api_key", "cli_model_override": ""},
@@ -78,7 +118,7 @@ class MainView(ttk.Window):
         self.sample_limit_var = ttk.IntVar(value=self.settings.get("sample_limit", 15))
         self.template_limit_var = ttk.IntVar(value=self.settings.get("template_limit", 200))
         self.only_used_templates_var = ttk.BooleanVar(value=self.settings.get("only_used_templates", False))
-        self.anonymize_data_var = ttk.BooleanVar(value=self.settings.get("anonymize_data", False))
+        self.anonymize_data_var = ttk.BooleanVar(value=self.settings.get("anonymize_data", True))
 
         self.custom_instructions_var = self.settings.get("custom_instructions", "")
 
@@ -88,39 +128,47 @@ class MainView(ttk.Window):
 
         self.attached_files = []
         self.create_widgets()
+        self.after(self.UI_EVENT_POLL_MS, self._consume_ui_events)
+        for warning in self._startup_warnings:
+            self.log(warning, "warning")
 
     def set_controller(self, controller):
         self.controller = controller
 
     def load_settings(self):
-        if os.path.exists(self.settings_file):
-            try:
-                with open(self.settings_file, "r", encoding="utf-8") as f:
-                    self.settings = json.load(f)
-                    if "ai_accounts" in self.settings:
-                        self.ai_accounts = self.settings["ai_accounts"]
-                    elif "api_keys" in self.settings:
-                        for k, v in self.settings["api_keys"].items():
-                            if k in self.ai_accounts:
-                                self.ai_accounts[k]["api_key"] = v
-            except Exception:
-                pass
+        result = self.settings_store.load()
+        self.settings = result.settings
+        self._legacy_credentials = result.legacy_credentials
+        self._startup_warnings.extend(result.warnings)
+        if "ai_accounts" in self.settings:
+            self.ai_accounts = self.settings["ai_accounts"]
 
         # Carrega dados sensíveis do Cofre do Sistema Operacional
         try:
             service = "AuditoriaZabbix"
-            z_pass = keyring.get_password(service, "zabbix_pass")
+            def load_secret(username):
+                stored = keyring.get_password(service, username)
+                legacy = self._legacy_credentials.get(username)
+                if stored is None and legacy:
+                    keyring.set_password(service, username, legacy)
+                    self._startup_warnings.append(
+                        f"Credencial legada '{username}' migrada para o cofre do sistema."
+                    )
+                    return legacy
+                return stored
+
+            z_pass = load_secret("zabbix_pass")
             if z_pass is not None: self.settings["zabbix_pass"] = z_pass
                 
-            z_token = keyring.get_password(service, "zabbix_token")
+            z_token = load_secret("zabbix_token")
             if z_token is not None: self.settings["zabbix_token"] = z_token
                 
             for account in self.ai_accounts.keys():
-                ai_key = keyring.get_password(service, f"{account}_api_key")
+                ai_key = load_secret(f"{account}_api_key")
                 if ai_key is not None:
                     self.ai_accounts[account]["api_key"] = ai_key
         except Exception as e:
-            print(f"Aviso: Falha ao acessar o cofre de credenciais: {e}")
+            self._startup_warnings.append(f"Falha ao acessar o cofre de credenciais: {e}")
 
     def save_settings(self):
         self.settings["zabbix_url"] = self.zabbix_url_var.get()
@@ -164,7 +212,15 @@ class MainView(ttk.Window):
             if key in self.settings:
                 del self.settings[key]
 
-        # Grava os dados sensíveis no Cofre do Sistema Operacional (Keyring)
+        try:
+            self.settings, warnings = self.settings_store.save(self.settings)
+            for warning in warnings:
+                self.log(warning, "warning")
+        except Exception as e:
+            self.log(f"Falha ao salvar configurações: {e}", "danger")
+            return False
+
+        # Só altera o cofre depois que a configuração sem segredos foi persistida.
         try:
             service = "AuditoriaZabbix"
             def safe_set(username, val):
@@ -182,13 +238,20 @@ class MainView(ttk.Window):
             for account, info in self.ai_accounts.items():
                 safe_set(f"{account}_api_key", info.get("api_key", ""))
         except Exception as e:
-            print(f"Aviso: Falha ao salvar no cofre de credenciais: {e}")
+            self.log(f"Falha ao salvar no cofre de credenciais: {e}", "warning")
+        return True
 
+    def delete_ai_account_credential(self, account_name):
+        """Remove a credencial antiga somente após a nova configuração persistir."""
         try:
-            with open(self.settings_file, "w", encoding="utf-8") as f:
-                json.dump(self.settings, f, indent=4, ensure_ascii=False)
-        except Exception:
-            pass
+            keyring.delete_password("AuditoriaZabbix", f"{account_name}_api_key")
+        except keyring.errors.PasswordDeleteError:
+            return
+        except Exception as error:
+            self.log(
+                f"Falha ao remover a credencial antiga da conta '{account_name}': {error}",
+                "warning",
+            )
 
     def update_key_dict(self, *args):
         account = self.ai_provider_var.get()
@@ -217,6 +280,14 @@ class MainView(ttk.Window):
                     self.ai_auth_mode_label.configure(text=f"Modo: CLI local ({binary or '?'}) — binário não encontrado no PATH ❌")
             else:
                 self.ai_auth_mode_label.configure(text="")
+        if hasattr(self, "model_combo"):
+            # Invalidate the previous selection immediately on the main thread;
+            # the queued event only updates the visible combobox.
+            self._model_state = "idle"
+            self._model_values = ()
+            self.set_model_state("idle", (), None, "Aguardando validação", None)
+            if self.controller:
+                self.controller.load_models_async(self.build_ai_config())
 
     def get_selected_base_provider(self):
         account = self.ai_provider_var.get()
@@ -304,7 +375,7 @@ class MainView(ttk.Window):
             width=50
         )
         self.model_combo.pack(side=LEFT, padx=(0, 10))
-        self.model_combo.set("Carregando modelos...")
+        self.model_combo.set("Aguardando validação")
 
         self.attach_button = ttk.Button(
             control_frame,
@@ -407,7 +478,7 @@ class MainView(ttk.Window):
         
         ttk.Checkbutton(collect_frame, text="Coletar apenas templates em uso (vinculados a hosts)", variable=self.only_used_templates_var, bootstyle="round-toggle").grid(row=3, column=0, columnspan=2, sticky="w", pady=5, padx=5)
         
-        ttk.Checkbutton(collect_frame, text="Anonimizar Dados Sensíveis (Ocultar IPs e Senhas)", variable=self.anonymize_data_var, bootstyle="info-round-toggle").grid(row=4, column=0, columnspan=2, sticky="w", pady=5, padx=5)
+        ttk.Checkbutton(collect_frame, text="Anonimizar Dados Sensíveis (Recomendado)", variable=self.anonymize_data_var, bootstyle="info-round-toggle").grid(row=4, column=0, columnspan=2, sticky="w", pady=5, padx=5)
         
         # --- Dados do Analista ---
         analyst_frame = ttk.LabelFrame(left_col, text="Dados do Analista / Empresa (Cabeçalho do Relatório)")
@@ -468,6 +539,10 @@ class MainView(ttk.Window):
         log_frame = ttk.Frame(self.notebook, padding=5)
         self.log_text = ScrolledText(log_frame, wrap=WORD, autohide=True, state="disabled")
         self.log_text.pack(fill=BOTH, expand=True)
+        self.log_text.text.tag_configure("info", foreground="#f8f9fa")
+        self.log_text.text.tag_configure("warning", foreground="#ffc107")
+        self.log_text.text.tag_configure("danger", foreground="#dc3545")
+        self.log_text.text.tag_configure("success", foreground="#198754")
         
         log_btn_frame = ttk.Frame(log_frame)
         log_btn_frame.pack(fill=X, pady=(5, 0))
@@ -503,16 +578,161 @@ class MainView(ttk.Window):
             self.ent_pass.grid()
 
     def update_model_list(self, models, default_model=None):
-        self.model_combo['values'] = models
-        if default_model and default_model in models:
-            self.model_combo.set(default_model)
-        elif models:
-            self.model_combo.set(models[0])
-        else:
-            self.model_combo.set("Nenhum modelo")
+        self.set_model_state("ready", tuple(models), default_model, "", None)
+
+    def set_model_state(
+        self, state, models=(), default_model=None, message="", load_id=None
+    ):
+        self._enqueue_ui_event(
+            "model_state", state, tuple(models), default_model, message, load_id
+        )
 
     def get_selected_model(self):
         return self.model_var.get()
+
+    def build_zabbix_config(self):
+        """Capture all Zabbix inputs while running on Tk's main thread."""
+        return ZabbixConfig(
+            url=self.zabbix_url_var.get().strip(),
+            auth_method=self.zabbix_auth_method_var.get(),
+            username=self.zabbix_user_var.get().strip(),
+            password=self.zabbix_pass_var.get().strip(),
+            token=self.zabbix_token_var.get().strip(),
+            verify_ssl=not self.zabbix_ignore_ssl_var.get(),
+        )
+
+    def build_ai_config(self):
+        """Capture the selected account and model without exposing Tk to workers."""
+        account = self.ai_provider_var.get()
+        account_info = self.ai_accounts.get(account, {})
+        selected_model = self.model_var.get()
+        if self._model_state != "ready" or selected_model not in self._model_values:
+            selected_model = ""
+        return AIConfig(
+            provider=account_info.get("provider", "Google Gemini"),
+            api_key=self.ai_key_var.get().strip(),
+            model=selected_model,
+            auth_mode=account_info.get("auth_mode", "api_key"),
+            cli_model_override=account_info.get("cli_model_override", ""),
+        )
+
+    def build_analyst_data(self):
+        return AnalystData(
+            name=self.analyst_name_var.get().strip(),
+            company=self.analyst_company_var.get().strip(),
+            email=self.analyst_email_var.get().strip(),
+            phone=self.analyst_phone_var.get().strip(),
+        )
+
+    def build_collection_limits(self):
+        return CollectionLimits(
+            history_limit=self.history_limit_var.get(),
+            sample_limit=self.sample_limit_var.get(),
+            template_limit=self.template_limit_var.get(),
+            only_used_templates=self.only_used_templates_var.get(),
+        )
+
+    def build_report_style(self):
+        return ReportStyle(
+            chart_type=self.chart_type_var.get(),
+            chart_color=self.chart_color_var.get(),
+            chart_bg_color=self.chart_bg_color_var.get(),
+            chart_text_color=self.chart_text_color_var.get(),
+            chart_width=self.chart_width_var.get(),
+            chart_height=self.chart_height_var.get(),
+            chart_font=self.chart_font_var.get(),
+        )
+
+    def build_audit_request(self, use_cache=False, data_file=None):
+        return AuditRequest(
+            zabbix=self.build_zabbix_config(),
+            ai=self.build_ai_config(),
+            analyst=self.build_analyst_data(),
+            limits=self.build_collection_limits(),
+            style=self.build_report_style(),
+            custom_instructions=self.custom_instructions_text.text.get("1.0", END).strip(),
+            attached_files=tuple(self.attached_files),
+            anonymize=self.anonymize_data_var.get(),
+            use_cache=use_cache,
+            data_file=data_file,
+        )
+
+    def build_collection_request(self, output_file):
+        return CollectionRequest(
+            zabbix=self.build_zabbix_config(),
+            limits=self.build_collection_limits(),
+            output_file=output_file,
+            anonymize=self.anonymize_data_var.get(),
+        )
+
+    def confirm_unanonymized_remote_audit(self, request):
+        """Require an explicit opt-in before sending identifiable remote data."""
+        if request.anonymize or _is_local_ollama_destination(request.ai):
+            return True
+
+        answer = Messagebox.yesno(
+            "A anonimização está desativada e os dados serão enviados para um "
+            f"destino externo ({request.ai.provider}). Isso pode expor IPs, nomes "
+            "e outros dados sensíveis. Deseja continuar sem anonimizar?",
+            "Confirmar envio de dados não anonimizados",
+            alert=True,
+            parent=self,
+        )
+        confirmed = isinstance(answer, str) and answer.casefold() in {"yes", "sim"}
+        if not confirmed:
+            self.log("Envio para a IA cancelado: anonimização desativada sem confirmação.", "warning")
+        return confirmed
+
+    def confirm_insecure_zabbix_transport(self, warnings):
+        """Ask for explicit consent before credentials use an unsafe transport."""
+        details = []
+        if "remote_http" in warnings:
+            details.append(
+                "A conexão usa HTTP fora de localhost; usuário/senha ou token "
+                "podem trafegar sem criptografia."
+            )
+        if "unverified_tls" in warnings:
+            details.append(
+                "A validação do certificado TLS está desativada; não será "
+                "possível confirmar a identidade do servidor."
+            )
+
+        answer = Messagebox.yesno(
+            "\n\n".join(details) + "\n\nDeseja continuar mesmo assim?",
+            "Confirmar conexão insegura com Zabbix",
+            alert=True,
+            parent=self,
+        )
+        return isinstance(answer, str) and answer.casefold() in {"yes", "sim"}
+
+    def confirm_cache_mismatch(self, summary, reasons):
+        """Confirm reuse when cached origin/settings differ from the current GUI."""
+        details = "\n".join(f"- {reason}" for reason in reasons)
+        answer = Messagebox.yesno(
+            "O cache selecionado diverge da configuração atual:\n"
+            f"{details}\n\n"
+            f"Origem: {summary.get('server_name', 'desconhecida')}\n"
+            f"Data UTC: {summary.get('created_at_utc', 'desconhecida')}\n"
+            f"Versão Zabbix: {summary.get('zabbix_version') or 'desconhecida'}\n"
+            f"Anonimizado: {'sim' if summary.get('anonymized') else 'não'}\n\n"
+            "Deseja regenerar o relatório usando este cache?",
+            "Confirmar reutilização de cache divergente",
+            alert=True,
+            parent=self,
+        )
+        return isinstance(answer, str) and answer.casefold() in {"yes", "sim"}
+
+    def confirm_pandoc_download(self, reason):
+        """Require explicit consent for source-only Pandoc downloads."""
+        answer = Messagebox.yesno(
+            f"{reason}\n\n"
+            "A exportação DOCX, ODT e PDF depende desse componente. Deseja "
+            "baixá-lo agora para o diretório de dados da aplicação?",
+            "Baixar Pandoc",
+            alert=True,
+            parent=self,
+        )
+        return isinstance(answer, str) and answer.casefold() in {"yes", "sim"}
 
     def attach_files_clicked(self):
         files = filedialog.askopenfilenames(
@@ -537,13 +757,19 @@ class MainView(ttk.Window):
     def open_manage_attachments(self):
         ManageAttachmentsWindow(self)
 
+    def _default_data_dir(self):
+        try:
+            return str(self.app_paths.ensure_data_dir())
+        except OSError:
+            return os.path.expanduser("~")
+
     def validate_and_load_models(self):
         self.save_settings()
         if self.controller:
-            self.controller.load_models_async()
+            self.controller.load_models_async(self.build_ai_config())
 
     def save_logs_clicked(self):
-        initial_dir = self.settings.get("last_log_dir", os.path.expanduser("~"))
+        initial_dir = self.settings.get("last_log_dir", self._default_data_dir())
         file_path = filedialog.asksaveasfilename(
             title="Salvar Logs",
             initialdir=initial_dir,
@@ -556,65 +782,13 @@ class MainView(ttk.Window):
                 self.save_settings()
                 
                 log_content = self.log_text.text.get("1.0", END)
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(log_content)
+                atomic_write_text(file_path, log_content)
                 self.log(f"Logs salvos com sucesso em: {file_path}")
             except Exception as e:
                 self.log(f"Erro ao salvar logs: {e}")
 
-    def _render_mermaid_charts(self, markdown_content):
-        """
-        Finds Mermaid xychart-beta blocks, renders them as PNG images using matplotlib,
-        and replaces the blocks with image links. Non-xychart-beta blocks (or blocks
-        that fail to parse) are left untouched as code blocks.
-        Returns the modified markdown and the path to the temporary directory created
-        (or None if no chart blocks were found).
-        """
-        matches = list(chart_renderer.MERMAID_CODE_FENCE_RE.finditer(markdown_content))
-        if not matches:
-            return markdown_content, None
-
-        temp_dir = tempfile.mkdtemp(prefix="zabbix_audit_charts_")
-        modified_markdown = markdown_content
-
-        chart_type = self.chart_type_var.get()
-        ctype_en = "bar" if chart_type == "Barra" else "line"
-        style = {
-            "chart_color": self.chart_color_var.get(),
-            "chart_bg_color": self.chart_bg_color_var.get(),
-            "chart_text_color": self.chart_text_color_var.get(),
-            "chart_width": self.chart_width_var.get(),
-            "chart_height": self.chart_height_var.get(),
-            "chart_font": self.chart_font_var.get(),
-        }
-
-        self.log(f"Encontrados {len(matches)} gráficos Mermaid. Renderizando com matplotlib...", "info")
-
-        for i, match in enumerate(reversed(matches)):
-            chart_index = len(matches) - 1 - i
-            code = chart_renderer.normalize_mermaid(match.group(1), ctype_en)
-            chart = chart_renderer.parse_xychart(code)
-
-            if chart is None:
-                self.log(f"Aviso: bloco Mermaid {chart_index+1} não pôde ser interpretado; mantido como bloco de código.", "warning")
-                continue
-
-            output_file_path = os.path.join(temp_dir, f"chart_{chart_index}.png")
-            try:
-                chart_renderer.render_chart(chart, style, output_file_path)
-                image_link_path = output_file_path.replace('\\', '/')
-                image_link = f"![Gráfico {chart_index+1}]({image_link_path})"
-                start, end = match.span()
-                modified_markdown = modified_markdown[:start] + image_link + modified_markdown[end:]
-                self.log(f"Gráfico {chart_index+1} renderizado com sucesso.", "info")
-            except Exception as e:
-                self.log(f"Erro ao renderizar gráfico {chart_index+1}: {e}", "danger")
-                continue
-
-        return modified_markdown, temp_dir
-
     def save_report_clicked(self):
-        initial_dir = self.settings.get("last_report_dir", os.path.expanduser("~"))
+        initial_dir = self.settings.get("last_report_dir", self._default_data_dir())
         type_var = ttk.StringVar(value="Markdown")
         filetypes_list = [("Markdown", "*.md"), ("Word Document", "*.docx"), ("PDF", "*.pdf"), ("OpenDocument Text", "*.odt"), ("Texto Puro", "*.txt"), ("Todos os arquivos", "*.*")]
         file_path = filedialog.asksaveasfilename(
@@ -653,13 +827,38 @@ class MainView(ttk.Window):
             
             author_name = self.analyst_name_var.get().strip()
             company_name = self.analyst_company_var.get().strip()
+            report_style = self.build_report_style()
+            report_metadata = ReportMetadata(
+                author_name=author_name,
+                company_name=company_name,
+                report_date=datetime.now().strftime("%d/%m/%Y"),
+            )
+
+            allow_pandoc_download = False
+            if ext in ReportExporter.RICH_FORMATS:
+                download_reason = pandoc_download_requirement()
+                if download_reason:
+                    if not self.confirm_pandoc_download(download_reason):
+                        self.log(
+                            "Exportação cancelada: download do Pandoc não autorizado.",
+                            "warning",
+                        )
+                        return
+                    allow_pandoc_download = True
             
             self.log(f"Iniciando exportação para {ext}... Aguarde.", "info")
             
             # Passa a lógica pesada de exportação para uma Thread separada
             thread = threading.Thread(
                 target=self._export_report_thread, 
-                args=(file_path, ext, report_content, author_name, company_name)
+                args=(
+                    file_path,
+                    ext,
+                    report_content,
+                    report_style,
+                    report_metadata,
+                    allow_pandoc_download,
+                )
             )
             thread.daemon = True
             thread.start()
@@ -667,113 +866,47 @@ class MainView(ttk.Window):
         except Exception as e:
             self.log(f"Erro inesperado: {e}", "danger")
 
-    def _export_report_thread(self, file_path, ext, report_content, author_name, company_name):
-        temp_dir_to_clean = None
+    def _export_report_thread(
+        self,
+        file_path,
+        ext,
+        report_content,
+        report_style,
+        report_metadata,
+        allow_pandoc_download=False,
+    ):
         try:
-            processed_content = report_content
-            if ext in ['.pdf', '.docx', '.odt']:
-                processed_content, temp_dir_to_clean = self._render_mermaid_charts(report_content)
-            
-            if ext in ['.md', '.txt', '']:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(processed_content)
-                self.log(f"Relatório salvo com sucesso em: {file_path}")
-                self.show_dialog("Sucesso", f"Relatório exportado em:\n{file_path}")
-            else:
-                self.log(f"Convertendo relatório para {ext}... Aguarde.", "info")
-                
-                import pypandoc
-                try:
-                    pypandoc.get_pandoc_version()
-                except OSError:
-                    self.log("Pandoc não encontrado. Baixando e instalando...", "warning")
-                    pypandoc.download_pandoc()
-                
-                to_format = 'pdf' if ext == '.pdf' else ext.replace('.', '')
-                extra_args = []
-                
-                if to_format == 'docx':
-                    reference_doc_path = resource_path('templates/report_template.docx')
-                    if os.path.exists(reference_doc_path):
-                        extra_args.extend(['--reference-doc', reference_doc_path])
-                        self.log(f"Usando template Word: {reference_doc_path}", "info")
-                
-                if to_format == 'pdf':
-                    try:
-                        pandoc_version = pypandoc.get_pandoc_version()
-                        version_tuple = tuple(int(p) for p in pandoc_version.split('.')[:3])
-                        if version_tuple < (3, 1, 7):
-                            self.log(f"Pandoc {pandoc_version} não suporta o writer Typst (requer >= 3.1.7). Baixando versão atualizada...", "warning")
-                            pypandoc.download_pandoc()
-
-                        typst_body = pypandoc.convert_text(processed_content, 'typst', format='gfm+hard_line_breaks')
-
-                        pdf_root_dir = temp_dir_to_clean
-                        created_pdf_root = False
-                        if not pdf_root_dir:
-                            pdf_root_dir = tempfile.mkdtemp(prefix="zabbix_report_typst_")
-                            created_pdf_root = True
-                        else:
-                            temp_dir_norm = pdf_root_dir.replace('\\', '/')
-                            typst_body = typst_body.replace(f'image("{temp_dir_norm}/', 'image("')
-
-                        try:
-                            author_field = author_name if author_name else "Analista de Monitoramento"
-                            if company_name:
-                                author_field += f" - {company_name}"
-                            current_date = datetime.now().strftime("%d/%m/%Y")
-
-                            with open(resource_path("templates/report_template.typ"), "r", encoding="utf-8") as f:
-                                typst_template = f.read()
-
-                            full_typst = typst_template.replace("__TITLE__", "Relatório Técnico de Auditoria Zabbix").replace(
-                                "__AUTHOR__", _escape_typst_text(author_field)).replace(
-                                "__DATE__", current_date).replace(
-                                "__BODY__", typst_body)
-
-                            typst_source_path = os.path.join(pdf_root_dir, "report.typ")
-                            with open(typst_source_path, "w", encoding="utf-8") as f:
-                                f.write(full_typst)
-
-                            import typst
-                            typst.compile(typst_source_path, output=file_path, root=pdf_root_dir)
-                            self.log(f"Relatório exportado com sucesso em: {file_path}")
-                        finally:
-                            if created_pdf_root:
-                                shutil.rmtree(pdf_root_dir, ignore_errors=True)
-                    except Exception as e:
-                        self.log(f"Erro ao exportar PDF: {e}", "danger")
-                else:
-                    try:
-                        pypandoc.convert_text(processed_content, to_format, format='gfm+hard_line_breaks', outputfile=file_path, extra_args=extra_args)
-                        self.log(f"Relatório exportado com sucesso em: {file_path}")
-                    except Exception as e:
-                        self.log(f"Erro ao converter com Pandoc: {e}", "danger")
-
+            exporter = ReportExporter(
+                log_callback=self.log,
+                progress_callback=self.update_progress,
+                allow_pandoc_download=allow_pandoc_download,
+            )
+            exporter.export(file_path, report_content, report_style, report_metadata)
+            self.show_dialog("Sucesso", f"Relatório exportado em:\n{file_path}")
         except Exception as e:
             self.log(f"Erro ao exportar relatório: {e}", "danger")
-        finally:
-            if temp_dir_to_clean:
-                self.log("Limpando arquivos temporários dos gráficos...", "info")
-                shutil.rmtree(temp_dir_to_clean, ignore_errors=True)
+            self.show_dialog(
+                "Erro na exportação",
+                f"Não foi possível exportar o relatório para {ext or '.md'}:\n{e}",
+                True,
+            )
 
     def start_audit_clicked(self):
         self.save_settings()
         if self.controller:
-            self.controller.start_audit(use_cache=False)
+            request = self.build_audit_request(use_cache=False)
+            if self.confirm_unanonymized_remote_audit(request):
+                self.controller.start_audit(request)
             
     def regerar_audit_clicked(self):
         self.save_settings()
         if self.controller:
-            self.controller.start_audit(use_cache=True)
+            request = self.build_audit_request(use_cache=True)
+            if self.confirm_unanonymized_remote_audit(request):
+                self.controller.start_audit(request)
 
     def collect_only_clicked(self):
-        z_url = self.zabbix_url_var.get().strip()
-        if not z_url:
-            self.show_dialog("Configuração Incompleta", "Preencha a URL do Zabbix na aba 'Configurações' antes de coletar.", is_error=True)
-            return
-
-        initial_dir = self.settings.get("last_collect_dir", os.path.expanduser("~"))
+        initial_dir = self.settings.get("last_collect_dir", self._default_data_dir())
         file_path = filedialog.asksaveasfilename(
             title="Salvar Coleta de Dados",
             initialdir=initial_dir,
@@ -788,10 +921,10 @@ class MainView(ttk.Window):
         self.save_settings()
 
         if self.controller:
-            self.controller.start_collection_only(file_path)
+            self.controller.start_collection_only(self.build_collection_request(file_path))
 
     def start_from_file_clicked(self):
-        initial_dir = self.settings.get("last_collect_dir", os.path.expanduser("~"))
+        initial_dir = self.settings.get("last_collect_dir", self._default_data_dir())
         file_path = filedialog.askopenfilename(
             title="Selecionar Coleta Existente",
             initialdir=initial_dir,
@@ -804,7 +937,9 @@ class MainView(ttk.Window):
         self.save_settings()
 
         if self.controller:
-            self.controller.start_audit(data_file=file_path)
+            request = self.build_audit_request(data_file=file_path)
+            if self.confirm_unanonymized_remote_audit(request):
+                self.controller.start_audit(request)
 
     def cancel_audit_clicked(self):
         if self.controller:
@@ -813,47 +948,136 @@ class MainView(ttk.Window):
     def test_zabbix_clicked(self):
         self.save_settings()
         if self.controller:
-            self.controller.test_zabbix_connection()
+            self.controller.test_zabbix_connection(self.build_zabbix_config())
+
+    def show_model_loading(self, provider):
+        self.set_model_state("loading", (), None, f"Conectando à {provider}...", None)
+
+    def select_logs_tab(self):
+        self._enqueue_ui_event("select_tab", 1)
+
+    def select_report_tab(self):
+        self._enqueue_ui_event("select_tab", 2)
             
     def update_progress(self, value, text):
-        def _update():
-            self.progress_bar['value'] = value
-            self.status_var.set(text)
-        self.after(0, _update)
+        self._enqueue_ui_event("progress", value, text)
 
     def log(self, message, style="info"):
-        def _log():
-            self.log_text.text.configure(state="normal")
-            self.log_text.text.insert(END, f"{message}\n")
-            self.log_text.text.see(END) # Auto-scroll
-            self.log_text.text.configure(state="disabled")
-        self.after(0, _log)
+        self._enqueue_ui_event("log", message, style)
 
     def clear_report(self):
-        self.report_text.text.configure(state="normal")
-        self.report_text.text.delete("1.0", END)
-        self.report_text.text.configure(state="disabled")
+        self._enqueue_ui_event("clear_report")
         
     def append_report_chunk(self, chunk):
-        def _append():
-            self.report_text.text.configure(state="normal")
-            self.report_text.text.insert(END, chunk)
-            self.report_text.text.see(END)
-            self.report_text.text.configure(state="disabled")
-        self.after(0, _append)
+        self._enqueue_ui_event("report_chunk", chunk)
 
     def show_dialog(self, title, message, is_error=False):
-        def _show():
+        self._enqueue_ui_event("dialog", title, message, is_error)
+
+    def set_ui_state(self, state):
+        self._enqueue_ui_event("ui_state", state)
+
+    def set_operation_state(self, state):
+        self._enqueue_ui_event("operation_state", state)
+
+    def _enqueue_ui_event(self, event_type, *payload):
+        """Publish a plain-Python event without touching Tk from the caller."""
+        with self._ui_event_lock:
+            if self._ui_events_closed:
+                return False
+            self.ui_event_queue.put((event_type, payload))
+        return True
+
+    def _consume_ui_events(self):
+        """Apply queued events on Tk's main thread and schedule the next poll."""
+        if self._ui_events_closed:
+            return
+
+        while True:
+            try:
+                event_type, payload = self.ui_event_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._apply_ui_event(event_type, payload)
+            except tk.TclError:
+                self._close_ui_event_queue()
+                return
+
+        if not self._ui_events_closed:
+            self.after(self.UI_EVENT_POLL_MS, self._consume_ui_events)
+
+    def _apply_ui_event(self, event_type, payload):
+        if event_type == "model_state":
+            state, models, default_model, message, load_id = payload
+            if load_id is not None and load_id < self._model_load_id:
+                return
+            if load_id is not None:
+                self._model_load_id = load_id
+            self._model_state = state
+            self._model_values = tuple(models)
+            self.model_combo['values'] = models
+            if state == "ready" and default_model and default_model in models:
+                self.model_combo.set(default_model)
+            elif state == "ready" and models:
+                self.model_combo.set(models[0])
+            else:
+                self.model_combo.set(message or state.capitalize())
+        elif event_type == "select_tab":
+            self.notebook.select(payload[0])
+        elif event_type == "progress":
+            value, text = payload
+            self.progress_bar['value'] = value
+            self.status_var.set(text)
+        elif event_type == "log":
+            message, style = payload
+            self.log_text.text.configure(state="normal")
+            self.log_text.text.insert(END, f"{message}\n", style)
+            self.log_text.text.see(END)
+            self.log_text.text.configure(state="disabled")
+        elif event_type == "clear_report":
+            self.report_text.text.configure(state="normal")
+            self.report_text.text.delete("1.0", END)
+            self.report_text.text.configure(state="disabled")
+        elif event_type == "report_chunk":
+            self.report_text.text.configure(state="normal")
+            self.report_text.text.insert(END, payload[0])
+            self.report_text.text.see(END)
+            self.report_text.text.configure(state="disabled")
+        elif event_type == "dialog":
+            title, message, is_error = payload
             if is_error:
                 Messagebox.show_error(message, title, parent=self)
             else:
                 Messagebox.show_info(message, title, parent=self)
-        self.after(0, _show)
+        elif event_type == "ui_state":
+            state = payload[0]
+            self.start_button.configure(state=state)
+            if hasattr(self, 'regerar_button'): self.regerar_button.configure(state=state)
+            if hasattr(self, 'coletar_button'): self.coletar_button.configure(state=state)
+            if hasattr(self, 'iniciar_de_arquivo_button'): self.iniciar_de_arquivo_button.configure(state=state)
+            if hasattr(self, 'test_zabbix_button'): self.test_zabbix_button.configure(state=state)
+            if hasattr(self, 'cancel_button'): self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")
+        elif event_type == "operation_state":
+            operation_state = payload[0]
+            controls_state = "normal" if operation_state == "idle" else "disabled"
+            cancel_state = "normal" if operation_state == "running" else "disabled"
+            self.start_button.configure(state=controls_state)
+            if hasattr(self, 'regerar_button'): self.regerar_button.configure(state=controls_state)
+            if hasattr(self, 'coletar_button'): self.coletar_button.configure(state=controls_state)
+            if hasattr(self, 'iniciar_de_arquivo_button'): self.iniciar_de_arquivo_button.configure(state=controls_state)
+            if hasattr(self, 'test_zabbix_button'): self.test_zabbix_button.configure(state=controls_state)
+            if hasattr(self, 'cancel_button'): self.cancel_button.configure(state=cancel_state)
 
-    def set_ui_state(self, state):
-        self.start_button.configure(state=state)
-        if hasattr(self, 'regerar_button'): self.regerar_button.configure(state=state)
-        if hasattr(self, 'coletar_button'): self.coletar_button.configure(state=state)
-        if hasattr(self, 'iniciar_de_arquivo_button'): self.iniciar_de_arquivo_button.configure(state=state)
-        if hasattr(self, 'test_zabbix_button'): self.test_zabbix_button.configure(state=state)
-        if hasattr(self, 'cancel_button'): self.cancel_button.configure(state="normal" if state == "disabled" else "disabled")
+    def _close_ui_event_queue(self):
+        with self._ui_event_lock:
+            self._ui_events_closed = True
+            while True:
+                try:
+                    self.ui_event_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+    def destroy(self):
+        self._close_ui_event_queue()
+        super().destroy()

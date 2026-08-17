@@ -7,8 +7,17 @@
 # process's current working directory.
 
 import sys
+import os
 
 block_cipher = None
+
+pandoc_name = "pandoc.exe" if sys.platform == "win32" else "pandoc"
+pandoc_binary = os.path.join("build", "pandoc", pandoc_name)
+if not os.path.isfile(pandoc_binary):
+    raise SystemExit(
+        f"Pandoc não encontrado em {pandoc_binary}. "
+        "Execute tools/prepare_pandoc.py antes do PyInstaller."
+    )
 
 hiddenimports = []
 if sys.platform == "win32":
@@ -20,8 +29,8 @@ else:
 
 a = Analysis(
     ["main.py"],
-    pathex=[],
-    binaries=[],
+    pathex=[SPECPATH],
+    binaries=[(pandoc_binary, "pandoc")],
     datas=[
         ("templates", "templates"),
         ("prompts", "prompts"),

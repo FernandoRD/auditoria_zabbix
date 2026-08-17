@@ -2,6 +2,7 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import BOTH, X, LEFT, RIGHT
 import tkinter as tk
 import threading
+import queue
 import os
 import shutil
 import tempfile
@@ -9,6 +10,9 @@ import tempfile
 from core.chart_renderer import parse_xychart, render_chart
 
 class StyleSettingsWindow(ttk.Toplevel):
+    PREVIEW_DEBOUNCE_MS = 250
+    PREVIEW_POLL_MS = 50
+
     def __init__(self, parent):
         super().__init__(parent)
         self.parent = parent
@@ -25,9 +29,17 @@ class StyleSettingsWindow(ttk.Toplevel):
         self.text_color_var = ttk.StringVar(value=self.parent.chart_text_color_var.get())
 
         self.preview_image = None
-        self.temp_preview_dir = None
+        self.temp_preview_dir = tempfile.mkdtemp(prefix="zabbix_preview_")
+        self._preview_results = queue.Queue()
+        self._preview_generation = 0
+        self._preview_debounce_id = None
+        self._preview_poll_id = None
+        self._preview_closed = False
 
         self.create_widgets()
+        self._preview_poll_id = self.after(
+            self.PREVIEW_POLL_MS, self._consume_preview_results
+        )
         self.update_preview()
 
     def create_widgets(self):
@@ -50,7 +62,7 @@ class StyleSettingsWindow(ttk.Toplevel):
         row3 = ttk.Frame(main_frame)
         row3.pack(fill=X, pady=5)
         ttk.Label(row3, text="Tipo do Gráfico:", width=18).pack(side=LEFT)
-        type_combo = ttk.Combobox(row3, textvariable=self.type_var, values=["Linha", "Barra"], state="readonly")
+        type_combo = ttk.Combobox(row3, textvariable=self.type_var, values=["Linha", "Barra", "Pizza"], state="readonly")
         type_combo.pack(side=LEFT, fill=X, expand=True)
         type_combo.bind("<<ComboboxSelected>>", lambda e: self.update_preview())
 
@@ -120,6 +132,14 @@ class StyleSettingsWindow(ttk.Toplevel):
 
     def update_preview(self):
         self.preview_label.configure(text="Gerando prévia... Aguarde.", image='')
+        if self._preview_debounce_id is not None:
+            self.after_cancel(self._preview_debounce_id)
+        self._preview_debounce_id = self.after(
+            self.PREVIEW_DEBOUNCE_MS, self._start_preview
+        )
+
+    def _start_preview(self):
+        self._preview_debounce_id = None
         font = self.font_var.get()
         chart_type = self.type_var.get()
         chart_color = self.color_var.get()
@@ -136,20 +156,46 @@ class StyleSettingsWindow(ttk.Toplevel):
         except tk.TclError:
             chart_height = 400
         
-        thread = threading.Thread(target=self._render_preview_thread, args=(font, chart_type, chart_color, chart_width, chart_height, chart_bg_color, chart_text_color))
+        self._preview_generation += 1
+        generation = self._preview_generation
+        output_path = os.path.join(
+            self.temp_preview_dir, f"preview_{generation}.png"
+        )
+        thread = threading.Thread(
+            target=self._render_preview_thread,
+            args=(
+                generation,
+                output_path,
+                font,
+                chart_type,
+                chart_color,
+                chart_width,
+                chart_height,
+                chart_bg_color,
+                chart_text_color,
+            ),
+        )
         thread.daemon = True
         thread.start()
 
-    def _render_preview_thread(self, font, chart_type, chart_color, chart_width, chart_height, chart_bg_color, chart_text_color):
-        ctype_en = "bar" if chart_type == "Barra" else "line"
-        code = (
-            'xychart-beta\n'
-            '  title "Exemplo de Desempenho"\n'
-            '  x-axis ["1h", "45m", "30m", "15m", "Agora"]\n'
-            '  y-axis "Uso de Cache (%)" 0 --> 100\n'
-            f'  {ctype_en} [20, 35, 30, 60, 45]'
-        )
-        chart = parse_xychart(code)
+    def _render_preview_thread(self, generation, output_path, font, chart_type, chart_color, chart_width, chart_height, chart_bg_color, chart_text_color):
+        if chart_type == "Pizza":
+            chart = {
+                "chart_type": "pie",
+                "title": "Distribuição de Severidade",
+                "labels": ["Alta", "Média", "Baixa"],
+                "values": [20, 35, 45],
+            }
+        else:
+            ctype_en = "bar" if chart_type == "Barra" else "line"
+            code = (
+                'xychart-beta\n'
+                '  title "Exemplo de Desempenho"\n'
+                '  x-axis ["1h", "45m", "30m", "15m", "Agora"]\n'
+                '  y-axis "Uso de Cache (%)" 0 --> 100\n'
+                f'  {ctype_en} [20, 35, 30, 60, 45]'
+            )
+            chart = parse_xychart(code)
 
         style = {
             "chart_color": chart_color,
@@ -160,15 +206,29 @@ class StyleSettingsWindow(ttk.Toplevel):
             "chart_font": font,
         }
 
-        if not self.temp_preview_dir:
-            self.temp_preview_dir = tempfile.mkdtemp(prefix="zabbix_preview_")
-        output_path = os.path.join(self.temp_preview_dir, "preview.png")
-
         try:
             render_chart(chart, style, output_path)
-            self.after(0, self._apply_preview_image, output_path)
+            self._preview_results.put((generation, output_path, None))
         except Exception as e:
-            self.after(0, lambda err=e: self.preview_label.configure(text=f"Erro na prévia:\n{err}", image=''))
+            self._preview_results.put((generation, None, str(e)))
+
+    def _consume_preview_results(self):
+        if self._preview_closed:
+            return
+        while True:
+            try:
+                generation, path, error = self._preview_results.get_nowait()
+            except queue.Empty:
+                break
+            if generation != self._preview_generation:
+                continue
+            if error:
+                self.preview_label.configure(text=f"Erro na prévia:\n{error}", image='')
+            else:
+                self._apply_preview_image(path)
+        self._preview_poll_id = self.after(
+            self.PREVIEW_POLL_MS, self._consume_preview_results
+        )
 
     def _apply_preview_image(self, path):
         try:
@@ -197,6 +257,13 @@ class StyleSettingsWindow(ttk.Toplevel):
         self.destroy()
 
     def destroy(self):
+        self._preview_closed = True
+        for callback_id in (self._preview_debounce_id, self._preview_poll_id):
+            if callback_id is not None:
+                try:
+                    self.after_cancel(callback_id)
+                except tk.TclError:
+                    pass
         if self.temp_preview_dir:
             shutil.rmtree(self.temp_preview_dir, ignore_errors=True)
         super().destroy()

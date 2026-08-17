@@ -1,0 +1,2 @@
+# Ferramentas usadas pela integração contínua e pela validação local.
+ruff==0.16.0

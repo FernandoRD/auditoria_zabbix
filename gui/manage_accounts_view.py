@@ -1,5 +1,6 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import BOTH, X, LEFT, RIGHT
+from ttkbootstrap.dialogs import Messagebox
 from api.ai_cli_client import cli_binary_status
 
 class ManageAccountsWindow(ttk.Toplevel):
@@ -137,6 +138,19 @@ class ManageAccountsWindow(ttk.Toplevel):
         if not new_name:
             return
 
+        if new_name in self.parent.ai_accounts and new_name != old_name:
+            answer = Messagebox.yesno(
+                f"A conta '{new_name}' já existe. Deseja sobrescrevê-la?",
+                "Confirmar sobrescrita",
+                alert=True,
+                parent=self,
+            )
+            if not (isinstance(answer, str) and answer.casefold() in {"yes", "sim"}):
+                return
+
+        previous_accounts = {
+            name: dict(account) for name, account in self.parent.ai_accounts.items()
+        }
         if old_name != "<Nova Conta>" and old_name != new_name:
             if old_name in self.parent.ai_accounts:
                 del self.parent.ai_accounts[old_name]
@@ -148,15 +162,34 @@ class ManageAccountsWindow(ttk.Toplevel):
             "cli_model_override": model_override
         }
 
-        self.parent.save_settings()
+        if self.parent.save_settings() is False:
+            self.parent.ai_accounts = previous_accounts
+            return
+        if old_name != "<Nova Conta>" and old_name != new_name:
+            self.parent.delete_ai_account_credential(old_name)
         self.parent.refresh_accounts(new_name)
         self.destroy()
 
     def remove_account(self):
         selected = self.selected_account.get()
         if selected != "<Nova Conta>" and selected in self.parent.ai_accounts:
+            answer = Messagebox.yesno(
+                f"Deseja remover permanentemente a conta '{selected}'?",
+                "Confirmar remoção",
+                alert=True,
+                parent=self,
+            )
+            if not (isinstance(answer, str) and answer.casefold() in {"yes", "sim"}):
+                return
+
+            previous_accounts = {
+                name: dict(account) for name, account in self.parent.ai_accounts.items()
+            }
             del self.parent.ai_accounts[selected]
-            self.parent.save_settings()
+            if self.parent.save_settings() is False:
+                self.parent.ai_accounts = previous_accounts
+                return
+            self.parent.delete_ai_account_credential(selected)
 
             next_acc = list(self.parent.ai_accounts.keys())[0] if self.parent.ai_accounts else ""
             self.parent.refresh_accounts(next_acc)

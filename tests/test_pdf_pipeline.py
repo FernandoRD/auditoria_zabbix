@@ -3,6 +3,9 @@ import shutil
 import tempfile
 import unittest
 
+from core.report_exporter import ReportExporter, ReportMetadata
+from core.run_config import ReportStyle
+
 try:
     import pypandoc
     _PANDOC_VERSION = tuple(int(p) for p in pypandoc.get_pandoc_version().split('.')[:3])
@@ -15,9 +18,6 @@ try:
     _TYPST_OK = True
 except ImportError:
     _TYPST_OK = False
-
-_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "report_template.typ")
-
 
 @unittest.skipUnless(_PANDOC_OK and _TYPST_OK,
                      "requer pandoc >= 3.1.7 e o pacote typst instalados")
@@ -35,18 +35,22 @@ class TestPdfPipeline(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _compile(self, markdown):
-        typst_body = pypandoc.convert_text(markdown, 'typst', format='gfm+hard_line_breaks')
-        with open(_TEMPLATE_PATH, "r", encoding="utf-8") as f:
-            template = f.read()
-        full = template.replace("__TITLE__", "Título de Teste").replace(
-            "__AUTHOR__", "Autor de Teste").replace(
-            "__DATE__", "01/01/2026").replace(
-            "__BODY__", typst_body)
-        typ_path = os.path.join(self.tmpdir, "report.typ")
-        with open(typ_path, "w", encoding="utf-8") as f:
-            f.write(full)
         pdf_path = os.path.join(self.tmpdir, "out.pdf")
-        typst.compile(typ_path, output=pdf_path, root=self.tmpdir)
+        style = ReportStyle(
+            chart_type="Linha",
+            chart_color="Padrão",
+            chart_bg_color="Branco",
+            chart_text_color="Preto (Padrão)",
+            chart_width=800,
+            chart_height=400,
+            chart_font="Arial, Helvetica, sans-serif",
+        )
+        metadata = ReportMetadata(
+            author_name="Autor de Teste",
+            report_date="01/01/2026",
+            title="Título de Teste",
+        )
+        ReportExporter().export(pdf_path, markdown, style, metadata)
         return pdf_path
 
     def test_markdown_with_horizontal_rules_compiles(self):
@@ -62,6 +66,13 @@ class TestPdfPipeline(unittest.TestCase):
             "| Métrica | Valor |\n|---|---|\n| NVPS | 120 |\n\n"
             "- [ ] pendente\n- [x] feita\n\n"
             "```bash\nls -la\n```\n\n"
+            "```mermaid\n"
+            "xychart-beta\n"
+            "  title \"Itens por host\"\n"
+            "  x-axis [\"srv-1\", \"srv-2\"]\n"
+            "  y-axis \"Itens\" 0 --> 20\n"
+            "  line [10, 15]\n"
+            "```\n\n"
             "[link](https://example.com)\n\n"
             "[^1]: conteúdo da nota.\n"
         )

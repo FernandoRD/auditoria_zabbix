@@ -19,12 +19,13 @@ python main.py
 # Test (unittest, stdlib — no pytest)
 python3 -m unittest discover -s tests -v
 
-# Docker (GUI over X11/Wayland via xhost)
-./build_image.fish          # builds and pushes fernandord/auditoria-zabbix image
+# Docker (GUI over authenticated X11/XWayland)
+./build_image.fish          # builds a local image only
+./build_image.fish --push   # requires visible confirmation before publishing
 ./exec_wayland.fish         # runs the container with X11/Wayland sockets mounted
 ```
 
-`tests/` covers `api/ai_cli_client.py`, the CLI branch of `AIClient`, and the `auth_mode` wiring in `controller.py` — all via mocked `subprocess`/`shutil.which`, never real CLI calls. There is no linter/formatter configured — don't assume `ruff`/`black` are wired up. The GUI itself (`gui/*.py`) has no automated tests (Tkinter, no test framework for it in this repo) — verify GUI changes by actually running `python main.py`.
+`tests/` uses stdlib `unittest` and covers Zabbix/AI transports, snapshots and controller operations, the GUI event queue with fakes, persistence, security, packaging, chart parsing and real export smoke paths. Tests mock external Zabbix/AI calls and do not require a display. The CI lint gate is Ruff 0.16.0 with `E9,F63,F7,F82`; there is no full style/formatting policy. Visual layout changes still need a real `python main.py` smoke test.
 
 If a venv exists at `venv/` (`python -m venv venv && pip install -r requirements.txt`), always run tests through `venv/bin/python3` — the system `python3` typically lacks `google-genai`/`openai`/`anthropic`, and `api/ai_api.py` imports all three unconditionally at module level, so even CLI-mode-only tests fail to import without them.
 
@@ -42,17 +43,23 @@ Loosely MVC, three layers wired together in `main.py`:
   - `ai_api.py` — `AIClient`: unifies Gemini/OpenAI/Anthropic/Ollama behind one streaming interface. Each account has an `auth_mode`: `"api_key"` (default, uses the provider SDK) or `"cli"` (delegates to `ai_cli_client.py`).
   - `ai_cli_client.py` — runs the provider's official CLI (`claude`/`codex`/`gemini`) as a sandboxed subprocess instead of an API key, for users who want to spend a Claude Pro/Max, ChatGPT Plus/Pro, or Gemini Advanced subscription instead of metered API billing. See "CLI auth mode" below.
 - **`core/controller.py` (Controller)** — `Controller` orchestrates user actions, runs work on background threads to keep the GUI responsive, and drives GUI state (buttons, progress bar).
+- **`core/run_config.py`** — frozen request/configuration snapshots built from Tk state on the main thread; secret fields use `repr=False` and attachment lists become tuples.
+- **`core/operation.py`** — one unique `OperationContext` per active operation, with cooperative cancellation and completion/cancellation race handling.
+- **`core/anonymizer.py`** — structural secret redaction and stable per-audit IPv4/IPv6 pseudonyms; this is not complete de-identification of names or business text.
+- **`core/paths.py` + `core/persistence.py`** — bundled resources stay read-only; settings, cache and data use platform-native user directories with validation and atomic writes.
 - **`core/chart_renderer.py`** — parses the AI-generated `xychart-beta` Mermaid syntax and renders it to PNG via matplotlib (Agg backend, OO API only). Used by both `gui/main_view.py` (report export) and `gui/style_settings_view.py` (style preview).
 - **`prompts/report_template.txt`** — the system prompt: persona, required report structure, formatting rules (e.g. mandatory Mermaid.js usage).
 - **`templates/`** — `report_template.typ` (Typst template: cover page, margins, page numbering, for PDF export) and `report_template.docx` (Pandoc reference doc for Word export).
 
 ### Threading rule (critical)
 
-Never touch Tkinter widgets (`self.log_text`, `self.progress_bar`, etc.) directly from `core/controller.py` background threads — always go through the view's thread-safe methods (`self.view.log()`, `self.after(0, ...)`). Doing otherwise causes silent segfaults, not exceptions.
+Never read or write Tkinter widgets/variables from a background thread, including `.get()`, `.set()`, `.configure()`, `after()`, notebook selection or mutable GUI lists. `MainView` builds frozen `AuditRequest`/`CollectionRequest` snapshots on the main thread. Workers may call view publisher methods such as `log()`, `update_progress()` and `append_report_chunk()` because those methods only enqueue plain Python events; only `_consume_ui_events()` touches Tk. Closing the window seals and drains the queue so late events are discarded.
+
+Only one Zabbix/AI operation may own the controller at a time. Never reset or reuse an old cancellation event: create a new `OperationContext`, check its cancellation callback inside loops/retry waits, publish chunks through `run_if_active()`, and let only the matching operation's `finally` release the UI.
 
 ### Zabbix API version/auth handling
 
-Zabbix changed auth from payload-based (`"auth": token`) to `Authorization: Bearer` headers in 6.4+. `discover_version()` does an unauthenticated `apiinfo.version` call first and sets `self.use_header_auth`; `api_call()` then injects the token in the right place per call.
+Zabbix changed auth from payload-based (`"auth": token`) to `Authorization: Bearer` headers in 6.4+. `discover_version()` does an unauthenticated `apiinfo.version` call first and sets `self.use_header_auth`; `api_call()` then injects the token in the right place per call. The tested compatibility boundaries are 5.0, 5.2, 6.0, 6.4, 7.0 and 7.4: login changes from `user` to `username` at 5.4, roles exist from 5.2, and proxy fields switch from `host`/`status` to `name`/`operating_mode` at 7.0.
 
 ### HA cluster node discovery (`get_active_node_hostid`)
 
@@ -69,13 +76,19 @@ Zabbix history can return millions of rows — too much for an LLM context windo
 
 ### Report generation flow
 
-`Controller` merges the Zabbix JSON, custom on-screen instructions, and attached OS evidence text (`evidencias_os.txt`) into `prompts/report_template.txt`, then calls `AIClient` with `stream=True`. Chunks are yielded and drawn into the GUI live via `self.after(0, ...)` (thread-safe).
+`Controller` merges the Zabbix JSON, snapshotted custom instructions, and bounded text attachments into `prompts/report_template.txt`, then consumes provider-neutral `AIStreamEvent`s from `AIClient`. Text chunks are published through the GUI queue. Exactly one terminal event is required before the report is called complete; errors, token limits, missing final events and failures after the first text preserve the visible output as partial.
 
-The GUI has four action buttons in `main_view.py`'s `control_frame`: **"▶ Iniciar Auditoria"** (fresh collection + AI), **"🔄 Regerar (Apenas IA)"** (reuses `last_audit_cache.json`, skips collection), **"📥 Apenas Coleta"** (collection only, no AI — prompts a save path and writes the JSON there via `Controller.start_collection_only`/`run_collection_only_flow`), and **"📂 Iniciar de Coleta"** (loads any user-picked `.json` collection file and goes straight to AI generation via `Controller.start_audit(data_file=...)`, skipping the Zabbix connection entirely). The actual connect+collect+anonymize+cache-write logic lives in one shared helper, `Controller._collect_zabbix_data()`, used by both `run_audit_flow` (fresh-collection path, i.e. `data_file is None and not use_cache`) and `run_collection_only_flow` — keep new collection logic there so it doesn't drift between entry points.
+The GUI has four action buttons in `main_view.py`'s `control_frame`: **"▶ Iniciar Auditoria"** (fresh collection + AI), **"🔄 Regerar (Apenas IA)"** (versioned cache + AI), **"📥 Apenas Coleta"** (collection to a user-selected JSON, no AI), and **"📂 Iniciar de Coleta"** (selected JSON + AI, no Zabbix connection). Main-thread handlers build `AuditRequest`/`CollectionRequest` snapshots and pass them to the controller. The connect+collect+anonymize+cache-write logic lives in `Controller._collect_zabbix_data()` and is shared by fresh audit and collection-only flows; keep new collection logic there so the entry points do not drift.
 
 ### CLI auth mode (`api/ai_cli_client.py`)
 
-An alternative to API-key billing: instead of calling a provider SDK, `generate_via_cli(provider, prompt, model_override)` shells out to the user's own already-authenticated CLI (`claude`, `codex`, or `gemini`) in headless mode — this uses the CLI's officially-supported non-interactive mode, not a reimplementation of its OAuth flow (which would violate the provider's Terms of Service). Every provider runs with tools/write-access disabled (`--allowedTools ""` for claude, `--sandbox read-only` for codex, `--approval-mode plan` for gemini), cwd in an isolated temp dir removed in `finally`, prompt sent via stdin (not argv, to avoid OS arg-length limits with large audit JSONs), and a 600s timeout. No streaming in v1 — one `yield` of the full response text. Toggled per-account in `gui/manage_accounts_view.py`'s "Usar CLI local" switch; `MainView.get_selected_auth_mode()`/`get_selected_cli_model_override()` feed it through `core/controller.py` into `AIClient`.
+An alternative to API-key billing: `generate_via_cli(provider, prompt, model_override)` runs the user's authenticated `claude`, `codex`, or `gemini` CLI in headless mode. Tools/write access are disabled (`--allowedTools ""`, `--sandbox read-only`, or `--approval-mode plan`), the prompt goes through stdin, and cwd is an isolated temp directory removed in `finally`. A help probe enables only capabilities advertised by the installed version. Claude `stream-json` and Codex `exec --json` are parsed incrementally only for the fixture-covered event schemas; Gemini and unsupported versions fall back to the final response. Cancellation/timeout terminate the process tree on POSIX and Windows, and errors never echo full stdout/stderr. CLI-local does not mean local inference: these CLIs may still send the prompt to the provider cloud.
+
+### Persistence, cache, attachments, and cloud boundary
+
+Writable files never use `resource_path()` or depend on cwd. `platformdirs` supplies config/cache/data roots; settings and the versioned collection cache are atomic/private where the OS permits. Settings are saved at defined actions (starting/testing flows and confirming account/style/path changes), not on every keystroke. Every fresh collection attempts an automatic cache update. Reports and logs require explicit save/export.
+
+Imported JSON is capped at 10 MiB and attachments at 10 files, 1 MiB each/5 MiB total. Prompts receive only attachment basenames. With anonymization enabled, structural secret keys and IPs are redacted in collection/import/cache data and attachments before AI generation, but host/person/company names and other context can remain. API and CLI modes for cloud providers send the resulting JSON, instructions and attachments remotely; only an Ollama endpoint under the operator's control is a local-processing choice.
 
 ### Chart rendering + export pipeline
 
@@ -86,7 +99,7 @@ An alternative to API-key billing: instead of calling a provider SDK, `generate_
 
 ## Extending
 
-- **New AI provider**: add it to `self.ai_accounts` in `gui/main_view.py.__init__`, then in `api/ai_api.py` implement `get_available_models()` and the streaming branch of `generate_audit_report()` (`for chunk in response: yield chunk.text`).
+- **New AI provider**: add it to `SUPPORTED_AI_PROVIDERS` and the initial GUI accounts, implement model discovery and a transport that yields `AIStreamEvent.text_chunk()` plus exactly one `AIStreamEvent.final()`, then test normal completion, partial/error, token limit, retry and cancellation behavior.
 - **New Zabbix metric**: add collection logic to `collect_data()` in `api/zabbix_api.py` under a new `audit_data[...]` key, and — required, or the LLM will silently ignore it — add explicit instructions for that key in `prompts/report_template.txt`.
 
 ## Gotchas

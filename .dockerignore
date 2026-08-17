@@ -1,3 +1,8 @@
+# Segredos locais. A exceção mantém apenas o modelo público de configuração.
+.env
+.env.*
+!.env.example
+
 # Git
 .git/
 .gitignore
@@ -5,10 +10,26 @@
 # Ambientes virtuais
 venv/
 env/
+.venv/
 
-# Arquivos Python compilados
+# Caches e arquivos Python compilados
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Instaladores e wheelhouse local
+whl/
+wheelhouse/
+*.whl
+
+# Material de desenvolvimento que não é necessário em runtime
+tests/
+docs/
+CLAUDE.md
+TECHNICAL_REFERENCE.md
 
 # Arquivos gerados localmente
 last_audit_cache.json
@@ -16,5 +37,7 @@ settings.json
 *.log
 *.pdf
 *.docx
-*.md
 *.html
+*.odt
+build/
+dist/
